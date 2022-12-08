@@ -35,7 +35,7 @@ void VulkanEngine::Init() {
     InitDefaultRenderpass();
     InitFramebuffers();
     InitSyncStructures();
-    InitDescriptors();
+    // InitDescriptors();
     InitPipelines();
 
     LoadMeshes();
@@ -96,92 +96,6 @@ AllocatedBuffer VulkanEngine::CreateBuffer(size_t p_allocSize, VkBufferUsageFlag
                              nullptr));
 
 	return l_newBuffer;
-}
-
-void VulkanEngine::InitDescriptors() {
-    std::vector<VkDescriptorPoolSize> sizes =
-	{
-		{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 10 }
-	};
-
-	VkDescriptorPoolCreateInfo pool_info = {};
-	pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-	pool_info.flags = 0;
-	pool_info.maxSets = 10;
-	pool_info.poolSizeCount = (uint32_t)sizes.size();
-	pool_info.pPoolSizes = sizes.data();
-
-	vkCreateDescriptorPool(m_device, &pool_info, nullptr, &m_descriptorPool);
-
-    //binding for camera data at 0
-	VkDescriptorSetLayoutBinding cameraBind = VulkanInit::DescriptorSetLayoutBinding(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,VK_SHADER_STAGE_VERTEX_BIT,0);
-
-	VkDescriptorSetLayoutBinding bindings[] = { cameraBind };
-
-	VkDescriptorSetLayoutCreateInfo setinfo = {};
-	setinfo.bindingCount = 1;
-	setinfo.flags = 0;
-	setinfo.pNext = nullptr;
-	setinfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-	setinfo.pBindings = bindings;
-
-	vkCreateDescriptorSetLayout(m_device, &setinfo, nullptr, &m_globalSetLayout);
-
-    for (int i = 0; i < FRAME_AMOUNT; i++)
-	{
-		m_frames[i].cameraBuffer = CreateBuffer(sizeof(GPUCameraData), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VMA_MEMORY_USAGE_CPU_TO_GPU);
-
-        //allocate one descriptor set for each frame
-		VkDescriptorSetAllocateInfo allocInfo ={};
-		allocInfo.pNext = nullptr;
-		allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-		//using the pool we just set
-		allocInfo.descriptorPool = m_descriptorPool;
-		//only 1 descriptor
-		allocInfo.descriptorSetCount = 1;
-		//using the global data layout
-		allocInfo.pSetLayouts = &m_globalSetLayout;
-
-		vkAllocateDescriptorSets(m_device, &allocInfo, &m_frames[i].globalDescriptor);
-
-        //information about the buffer we want to point at in the descriptor
-		VkDescriptorBufferInfo binfo;
-		//it will be the camera buffer
-		binfo.buffer = m_frames[i].cameraBuffer.m_buffer;
-		//at 0 offset
-		binfo.offset = 0;
-		//of the size of a camera data struct
-		binfo.range = sizeof(GPUCameraData);
-
-		VkWriteDescriptorSet setWrite = {};
-		setWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		setWrite.pNext = nullptr;
-
-		//we are going to write into binding number 0
-		setWrite.dstBinding = 0;
-		//of the global descriptor
-		setWrite.dstSet = m_frames[i].globalDescriptor;
-
-		setWrite.descriptorCount = 1;
-		//and the type is uniform buffer
-		setWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-		setWrite.pBufferInfo = &binfo;
-
-		vkUpdateDescriptorSets(m_device, 1, &setWrite, 0, nullptr);
-	}
-
-	// add buffers to deletion queues
-	for (int i = 0; i < FRAME_AMOUNT; i++)
-	{
-		m_mainDeletionQueue.PushFunction([&]() {
-			vmaDestroyBuffer(m_allocator, m_frames[i].cameraBuffer.m_buffer, m_frames[i].cameraBuffer.m_allocation);
-		});
-	}
-
-    m_mainDeletionQueue.PushFunction([&]() {
-		vkDestroyDescriptorSetLayout(m_device, m_globalSetLayout, nullptr);
-        vkDestroyDescriptorPool(m_device, m_descriptorPool, nullptr);
-	});
 }
 
 Material* VulkanEngine::CreateMaterial(VkPipeline p_pipeline, VkPipelineLayout p_layout, const std::string &p_name) {
@@ -317,10 +231,15 @@ void VulkanEngine::InitVulkan() {
     m_graphicsQueue = l_vkbDevice.get_queue(vkb::QueueType::graphics).value();
 	m_graphicsQueueFamily = l_vkbDevice.get_queue_index(vkb::QueueType::graphics).value();
 
+    VmaVulkanFunctions vulkanFunctions = {};
+    vulkanFunctions.vkGetInstanceProcAddr = &vkGetInstanceProcAddr;
+    vulkanFunctions.vkGetDeviceProcAddr = &vkGetDeviceProcAddr;
+
     VmaAllocatorCreateInfo l_allocatorInfo = {};
     l_allocatorInfo.physicalDevice = m_physicalDevice;
     l_allocatorInfo.device = m_device;
     l_allocatorInfo.instance = m_instance;
+    l_allocatorInfo.pVulkanFunctions = &vulkanFunctions;
     vmaCreateAllocator(&l_allocatorInfo, &m_allocator);
 }
 
@@ -376,6 +295,7 @@ void VulkanEngine::InitSwapchain() {
 
     m_mainDeletionQueue.PushFunction([=]() {
         vkDestroySwapchainKHR(m_device, m_swapchain, nullptr);
+        vkDestroyImageView(m_device, m_depthImageView, nullptr);
         vmaDestroyImage(m_allocator, m_depthImage.m_image, m_depthImage.m_allocation);
     });
 }
@@ -584,17 +504,13 @@ void VulkanEngine::InitPipelines() {
     l_meshPipelineLayoutInfo.pPushConstantRanges = &l_pushConstant;
     l_meshPipelineLayoutInfo.pushConstantRangeCount = 1;
 
-    l_meshPipelineLayoutInfo.setLayoutCount = 1;
-    l_meshPipelineLayoutInfo.pSetLayouts = &m_globalSetLayout;
-
     VK_CHECK(vkCreatePipelineLayout(m_device, &l_meshPipelineLayoutInfo, nullptr, &m_meshPipelineLayout));
 
     //build the stage-create-info for both vertex and fragment stages. This lets the pipeline know the shader modules per stage
 	PipelineBuilder pipelineBuilder;
 
-	pipelineBuilder.m_shaderStages.push_back(
-            VulkanInit::PipelineShaderStageCreateInfo(VK_SHADER_STAGE_FRAGMENT_BIT, triangleFragShader));
-
+	pipelineBuilder.m_shaderStages.push_back(VulkanInit::PipelineShaderStageCreateInfo(
+            VK_SHADER_STAGE_FRAGMENT_BIT, triangleFragShader));
 
 	//vertex input controls how to read vertices from vertex buffers. We aren't using it yet
 	pipelineBuilder.m_vertexInputInfo = VulkanInit::VertexInputStateCreateInfo();
@@ -767,14 +683,27 @@ void VulkanEngine::Draw() {
 }
 
 void VulkanEngine::DrawObjects(VkCommandBuffer p_cmd, RenderObject* p_first, uint32_t p_count) {
-    //make a model view matrix for rendering the object
-	//camera view
+   //camera view
 	glm::vec3 camPos = { 0.f,-6.f,-10.f };
 
 	glm::mat4 view = glm::translate(glm::mat4(1.f), camPos);
 	//camera projection
 	glm::mat4 projection = glm::perspective(glm::radians(70.f), 1700.f / 900.f, 0.1f, 200.0f);
 	projection[1][1] *= -1;
+
+	//fill a GPU camera data struct
+	GPUCameraData camData;
+	camData.proj = projection;
+	camData.view = view;
+	camData.viewproj = projection * view;
+
+	//and copy it to the buffer
+	/*void* data;
+	vmaMapMemory(m_allocator, GetCurrentFrame().cameraBuffer.m_allocation, &data);
+
+	memcpy(data, &camData, sizeof(GPUCameraData));
+
+	vmaUnmapMemory(m_allocator, GetCurrentFrame().cameraBuffer.m_allocation);*/
 
 	Mesh* lastMesh = nullptr;
 	Material* lastMaterial = nullptr;
@@ -788,7 +717,6 @@ void VulkanEngine::DrawObjects(VkCommandBuffer p_cmd, RenderObject* p_first, uin
 			lastMaterial = object.material;
 		}
 
-
 		glm::mat4 model = object.transformMatrix;
 		//final render matrix, that we are calculating on the cpu
 		glm::mat4 mesh_matrix = projection * view * model;
@@ -797,7 +725,10 @@ void VulkanEngine::DrawObjects(VkCommandBuffer p_cmd, RenderObject* p_first, uin
 		constants.renderMatrix = mesh_matrix;
 
 		//upload the mesh to the GPU via push constants
-		vkCmdPushConstants(p_cmd, object.material->pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(MeshPushConstants), &constants);
+		vkCmdPushConstants(
+                p_cmd,
+                object.material->pipelineLayout,
+                VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(MeshPushConstants), &constants);
 
 		//only bind the mesh if it's a different one from last bind
 		if (object.mesh != lastMesh) {
@@ -844,17 +775,6 @@ bool VulkanEngine::LoadShaderModule(const std::filesystem::path &p_path, VkShade
 
 FrameData &VulkanEngine::GetCurrentFrame() {
     return m_frames[m_frameNumber % FRAME_AMOUNT];
-}
-
-size_t VulkanEngine::PadUniformBufferSize(size_t p_originalSize) {
-    // Calculate required alignment based on minimum device offset alignment
-	/*size_t minUboAlignment = m_physicalProperties.limits.minUniformBufferOffsetAlignment;
-	size_t alignedSize = p_originalSize;
-	if (minUboAlignment > 0) {
-		alignedSize = (alignedSize + minUboAlignment - 1) & ~(minUboAlignment - 1);
-	}
-	return alignedSize;*/
-    return 0;
 }
 
 VkPipeline PipelineBuilder::BuildPipeline(VkDevice device, VkRenderPass pass) {

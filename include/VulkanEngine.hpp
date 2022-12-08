@@ -78,7 +78,7 @@ struct GPUCameraData{
 	glm::mat4 viewproj;
 };
 
-struct GPUSceneData {
+/*struct GPUSceneData {
     glm::vec4 ambientColor;
 	glm::vec4 sunlightDirection; //w for sun power
 	glm::vec4 sunlightColor;
@@ -86,7 +86,7 @@ struct GPUSceneData {
 
 struct GPUObjectData {
     glm::mat4 modelMatrix;
-};
+};*/
 
 class PipelineBuilder {
 public:
@@ -123,8 +123,8 @@ private:
     uint32_t m_graphicsQueueFamily;
     VmaAllocator m_allocator;
 
-    VkDescriptorSetLayout m_globalSetLayout;
-    VkDescriptorPool m_descriptorPool;
+    /*VkDescriptorSetLayout m_globalSetLayout;
+    VkDescriptorPool m_descriptorPool;*/
 
     // --- RENDER OBJECTS ---
     VkSwapchainKHR m_swapchain; // from other articles
@@ -163,7 +163,7 @@ public:
 
 private:
     AllocatedBuffer CreateBuffer(size_t p_allocSize, VkBufferUsageFlags p_usage, VmaMemoryUsage p_memoryUsage);
-    void InitDescriptors();
+    // void InitDescriptors();
 
     Mesh* GetMesh(const std::string &p_name);
     Material* GetMaterial(const std::string &p_name);
@@ -189,7 +189,7 @@ private:
     void Draw();
     void DrawObjects(VkCommandBuffer p_cmd, RenderObject* p_first, uint32_t count);
 
-    size_t PadUniformBufferSize(size_t p_originalSize);
+    // size_t PadUniformBufferSize(size_t p_originalSize);
 };
 
 #endif //VULKAN_TERRAIN_VULKAN_ENGINE_HPP
