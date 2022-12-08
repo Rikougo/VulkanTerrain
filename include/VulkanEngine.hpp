@@ -43,11 +43,6 @@ struct DeletionQueue {
     }
 };
 
-struct MeshPushConstants {
-	glm::vec4 data;
-	glm::mat4 renderMatrix;
-};
-
 struct FrameData {
     VkSemaphore presentSemaphore, renderSemaphore;
     VkFence renderFence;
@@ -59,6 +54,7 @@ struct FrameData {
     AllocatedBuffer objectBuffer;
 
 	VkDescriptorSet globalDescriptor;
+    VkDescriptorSet objectDescriptor;
 };
 
 struct Material {
@@ -78,7 +74,7 @@ struct GPUCameraData{
 	glm::mat4 viewproj;
 };
 
-/*struct GPUSceneData {
+struct GPUSceneData {
     glm::vec4 ambientColor;
 	glm::vec4 sunlightDirection; //w for sun power
 	glm::vec4 sunlightColor;
@@ -86,7 +82,7 @@ struct GPUCameraData{
 
 struct GPUObjectData {
     glm::mat4 modelMatrix;
-};*/
+};
 
 class PipelineBuilder {
 public:
@@ -104,6 +100,12 @@ public:
     VkPipeline BuildPipeline(VkDevice p_device, VkRenderPass p_pass);
 };
 
+struct UploadContext {
+    VkFence m_uploadFence;
+	VkCommandPool m_commandPool;
+	VkCommandBuffer m_commandBuffer;
+};
+
 class VulkanEngine {
 private:
     bool m_initialized = false;
@@ -116,15 +118,12 @@ private:
     VkInstance m_instance;
     VkDebugUtilsMessengerEXT m_debugMessenger;
     VkPhysicalDevice m_physicalDevice;
-    // VkPhysicalDeviceProperties m_physicalProperties;
+    VkPhysicalDeviceProperties m_physicalProperties;
     VkDevice m_device;
     VkSurfaceKHR m_surface;
     VkQueue m_graphicsQueue;
     uint32_t m_graphicsQueueFamily;
     VmaAllocator m_allocator;
-
-    /*VkDescriptorSetLayout m_globalSetLayout;
-    VkDescriptorPool m_descriptorPool;*/
 
     // --- RENDER OBJECTS ---
     VkSwapchainKHR m_swapchain; // from other articles
@@ -144,6 +143,10 @@ private:
 
     FrameData m_frames[FRAME_AMOUNT];
 
+    VkDescriptorPool m_descriptorPool;
+    VkDescriptorSetLayout m_globalSetLayout;
+    VkDescriptorSetLayout m_objectSetLayout;
+
     VkPipelineLayout m_meshPipelineLayout;
     VkPipeline m_meshPipeline;
 
@@ -151,8 +154,10 @@ private:
     std::unordered_map<std::string, Material> m_materials;
     std::unordered_map<std::string, Mesh> m_mesh;
 
-    /*GPUSceneData m_sceneParameters;
-    AllocatedBuffer m_sceneParameterBuffer;*/
+    UploadContext m_context;
+
+    GPUSceneData m_sceneParameters;
+    AllocatedBuffer m_sceneParameterBuffer;
 public:
     // VulkanEngine() = default;
 
@@ -163,7 +168,7 @@ public:
 
 private:
     AllocatedBuffer CreateBuffer(size_t p_allocSize, VkBufferUsageFlags p_usage, VmaMemoryUsage p_memoryUsage);
-    // void InitDescriptors();
+    size_t PadUniformBufferSize(size_t p_originalSize);
 
     Mesh* GetMesh(const std::string &p_name);
     Material* GetMaterial(const std::string &p_name);
@@ -171,15 +176,18 @@ private:
 
     void LoadMeshes();
     void UploadMesh(Mesh& p_mesh);
+    void ImmediateSubmit(std::function<void(VkCommandBuffer p_cmd)>&& function);
 
     void InitScene();
 
     void InitVulkan();
+    void InitIMGUI();
     void InitSwapchain();
     void InitCommands();
     void InitDefaultRenderpass();
     void InitFramebuffers();
     void InitSyncStructures();
+    void InitDescriptors();
     void InitPipelines();
 
     FrameData& GetCurrentFrame();
