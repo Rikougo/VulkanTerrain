@@ -6,6 +6,7 @@
 
 #define VMA_IMPLEMENTATION
 #include "vk_mem_alloc.h"
+#include "imgui_impl_glfw.h"
 
 #define VK_CHECK(x)                                                 \
 	do                                                              \
@@ -37,6 +38,7 @@ void VulkanEngine::Init() {
     InitSyncStructures();
     InitDescriptors();
     InitPipelines();
+    InitIMGUI();
 
     LoadMeshes();
 
@@ -46,9 +48,17 @@ void VulkanEngine::Init() {
 }
 
 void VulkanEngine::Run() {
+    static bool l_showDemoWindow = true;
+
     while (!glfwWindowShouldClose(m_window)) {
         glfwPollEvents();
-        // ProcessEvents();
+
+        ImGui_ImplVulkan_NewFrame();
+        ImGui_ImplGlfw_NewFrame();
+        ImGui::NewFrame();
+
+        ImGui::ShowDemoWindow(&l_showDemoWindow);
+        ImGui::Render();
         Draw();
     }
 
@@ -108,7 +118,6 @@ size_t VulkanEngine::PadUniformBufferSize(size_t p_originalSize)
 	return alignedSize;
 }
 
-
 Material* VulkanEngine::CreateMaterial(VkPipeline p_pipeline, VkPipelineLayout p_layout, const std::string &p_name) {
     Material l_mat{};
     l_mat.pipeline = p_pipeline;
@@ -147,40 +156,93 @@ void VulkanEngine::LoadMeshes() {
 }
 
 void VulkanEngine::UploadMesh(Mesh &p_mesh) {
+    const size_t bufferSize= p_mesh.m_vertices.size() * sizeof(Vertex);
+	//allocate staging buffer
+	VkBufferCreateInfo stagingBufferInfo = {};
+	stagingBufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+	stagingBufferInfo.pNext = nullptr;
+
+	stagingBufferInfo.size = bufferSize;
+	stagingBufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+
+	//let the VMA library know that this data should be on CPU RAM
+	VmaAllocationCreateInfo vmaallocInfo = {};
+	vmaallocInfo.usage = VMA_MEMORY_USAGE_CPU_ONLY;
+
+	AllocatedBuffer stagingBuffer{};
+
+	//allocate the buffer
+	VK_CHECK(vmaCreateBuffer(m_allocator, &stagingBufferInfo, &vmaallocInfo,
+		&stagingBuffer.m_buffer,
+		&stagingBuffer.m_allocation,
+		nullptr));
+
+    void* data;
+	vmaMapMemory(m_allocator, stagingBuffer.m_allocation, &data);
+
+	memcpy(data, p_mesh.m_vertices.data(), p_mesh.m_vertices.size() * sizeof(Vertex));
+
+	vmaUnmapMemory(m_allocator, stagingBuffer.m_allocation);
+
     //allocate vertex buffer
-	VkBufferCreateInfo bufferInfo = {};
-	bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+	VkBufferCreateInfo vertexBufferInfo = {};
+	vertexBufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
 	//this is the total size, in bytes, of the buffer we are allocating
-	bufferInfo.size = p_mesh.m_vertices.size() * sizeof(Vertex);
+	vertexBufferInfo.size = bufferSize;
 	//this buffer is going to be used as a Vertex Buffer
-	bufferInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+	vertexBufferInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
 
 
 	//let the VMA library know that this data should be writeable by CPU, but also readable by GPU
-	VmaAllocationCreateInfo vmaallocInfo = {};
-	vmaallocInfo.usage = VMA_MEMORY_USAGE_CPU_TO_GPU;
+	vmaallocInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
 
 	//allocate the buffer
-	VK_CHECK(vmaCreateBuffer(m_allocator, &bufferInfo, &vmaallocInfo,
+	VK_CHECK(vmaCreateBuffer(m_allocator, &vertexBufferInfo, &vmaallocInfo,
 		&p_mesh.m_vertexBuffer.m_buffer,
 		&p_mesh.m_vertexBuffer.m_allocation,
 		nullptr));
+
+    ImmediateSubmit([=](VkCommandBuffer p_cmd) {
+        VkBufferCopy copy;
+		copy.dstOffset = 0;
+		copy.srcOffset = 0;
+		copy.size = bufferSize;
+		vkCmdCopyBuffer(p_cmd, stagingBuffer.m_buffer, p_mesh.m_vertexBuffer.m_buffer, 1, &copy);
+    });
 
 	//add the destruction of triangle mesh buffer to the deletion queue
 	m_mainDeletionQueue.PushFunction([=]() {
         vmaDestroyBuffer(m_allocator, p_mesh.m_vertexBuffer.m_buffer, p_mesh.m_vertexBuffer.m_allocation);
     });
 
-    void* data;
-	vmaMapMemory(m_allocator, p_mesh.m_vertexBuffer.m_allocation, &data);
-
-	memcpy(data, p_mesh.m_vertices.data(), p_mesh.m_vertices.size() * sizeof(Vertex));
-
-	vmaUnmapMemory(m_allocator, p_mesh.m_vertexBuffer.m_allocation);
+    vmaDestroyBuffer(m_allocator, stagingBuffer.m_buffer, stagingBuffer.m_allocation);
 }
 
 void VulkanEngine::ImmediateSubmit(std::function<void(VkCommandBuffer p_cmd)>&& function) {
+    vkResetFences(m_device, 1, &m_uploadContext.m_uploadFence);
+    VkCommandBuffer cmd = m_uploadContext.m_commandBuffer;
 
+	//begin the command buffer recording. We will use this command buffer exactly once before resetting, so we tell vulkan that
+	VkCommandBufferBeginInfo cmdBeginInfo = VulkanInit::CommandBufferBeginInfo(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+
+	VK_CHECK(vkBeginCommandBuffer(cmd, &cmdBeginInfo));
+
+	//execute the function
+	function(cmd);
+
+	VK_CHECK(vkEndCommandBuffer(cmd));
+
+	VkSubmitInfo submit = VulkanInit::SubmitInfo(&cmd);
+
+	//submit command buffer to the queue and execute it.
+	// _uploadFence will now block until the graphic commands finish execution
+	VK_CHECK(vkQueueSubmit(m_graphicsQueue, 1, &submit, m_uploadContext.m_uploadFence));
+
+	vkWaitForFences(m_device, 1, &m_uploadContext.m_uploadFence, true, 9999999999);
+	vkResetFences(m_device, 1, &m_uploadContext.m_uploadFence);
+
+	// reset the command buffers inside the command pool
+	vkResetCommandPool(m_device, m_uploadContext.m_commandPool, 0);
 }
 
 void VulkanEngine::InitScene() {
@@ -265,71 +327,6 @@ void VulkanEngine::InitVulkan() {
     vmaCreateAllocator(&l_allocatorInfo, &m_allocator);
 }
 
-void VulkanEngine::InitIMGUI() {
-    //1: create descriptor pool for IMGUI
-	// the size of the pool is very oversize, but it's copied from imgui demo itself.
-	VkDescriptorPoolSize pool_sizes[] =
-	{
-		{ VK_DESCRIPTOR_TYPE_SAMPLER, 1000 },
-		{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1000 },
-		{ VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1000 },
-		{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1000 },
-		{ VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, 1000 },
-		{ VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, 1000 },
-		{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1000 },
-		{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1000 },
-		{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1000 },
-		{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, 1000 },
-		{ VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, 1000 }
-	};
-
-	VkDescriptorPoolCreateInfo pool_info = {};
-	pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-	pool_info.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-	pool_info.maxSets = 1000;
-	pool_info.poolSizeCount = std::size(pool_sizes);
-	pool_info.pPoolSizes = pool_sizes;
-
-	VkDescriptorPool imguiPool;
-	VK_CHECK(vkCreateDescriptorPool(m_device, &pool_info, nullptr, &imguiPool));
-
-
-	// 2: initialize imgui library
-
-	//this initializes the core structures of imgui
-	ImGui::CreateContext();
-
-	//this initializes imgui for SDL
-	ImGui_ImplSDL2_InitForVulkan(m_window);
-
-	//this initializes imgui for Vulkan
-	ImGui_ImplVulkan_InitInfo init_info = {};
-	init_info.Instance = m_instance;
-	init_info.PhysicalDevice = m_physicalDevice;
-	init_info.Device = m_device;
-	init_info.Queue = m_graphicsQueue;
-	init_info.DescriptorPool = imguiPool;
-	init_info.MinImageCount = 3;
-	init_info.ImageCount = 3;
-	init_info.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
-
-	ImGui_ImplVulkan_Init(&init_info, m_renderPass);
-
-	//execute a gpu command to upload imgui font textures
-	ImmediateSubmit([&](VkCommandBuffer cmd) {
-        ImGui_ImplVulkan_CreateFontsTexture(cmd);
-    });
-
-	//clear font textures from cpu data
-	ImGui_ImplVulkan_DestroyFontUploadObjects();
-
-	//add the destroy the imgui created structures
-	m_mainDeletionQueue.PushFunction([=]() {
-        vkDestroyDescriptorPool(m_device, imguiPool, nullptr);
-        ImGui_ImplVulkan_Shutdown();
-    });
-}
-
 void VulkanEngine::InitSwapchain() {
     vkb::SwapchainBuilder l_swapchainBuilder{m_physicalDevice, m_device, m_surface };
 
@@ -388,6 +385,20 @@ void VulkanEngine::InitSwapchain() {
 }
 
 void VulkanEngine::InitCommands() {
+    VkCommandPoolCreateInfo l_uploadCommandPoolInfo = VulkanInit::CommandPoolCreateInfo(m_graphicsQueueFamily);
+	//create pool for upload context
+	VK_CHECK(vkCreateCommandPool(m_device, &l_uploadCommandPoolInfo, nullptr, &m_uploadContext.m_commandPool));
+
+	m_mainDeletionQueue.PushFunction([=]() {
+		vkDestroyCommandPool(m_device, m_uploadContext.m_commandPool, nullptr);
+	});
+
+	//allocate the default command buffer that we will use for the instant commands
+	VkCommandBufferAllocateInfo l_cmdAllocInfo = VulkanInit::CommandBufferAllocateInfo(m_uploadContext.m_commandPool, 1);
+
+	// VkCommandBuffer cmd;
+	VK_CHECK(vkAllocateCommandBuffers(m_device, &l_cmdAllocInfo, &m_uploadContext.m_commandBuffer));
+
     VkCommandPoolCreateInfo commandPoolInfo = VulkanInit::CommandPoolCreateInfo(
             m_graphicsQueueFamily,
             VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT);
@@ -541,6 +552,18 @@ void VulkanEngine::InitSyncStructures() {
 	semaphoreCreateInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
 	semaphoreCreateInfo.pNext = nullptr;
 	semaphoreCreateInfo.flags = 0;
+
+    VkFenceCreateInfo l_uploadFenceCreateInfo{};
+    l_uploadFenceCreateInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+	l_uploadFenceCreateInfo.pNext = nullptr;
+	//we want to create the fence with the Create Signaled flag, so we can wait on it before using it on a GPU command (for the first frame)
+	l_uploadFenceCreateInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+
+    VK_CHECK(vkCreateFence(m_device, &l_uploadFenceCreateInfo, nullptr, &m_uploadContext.m_uploadFence));
+
+    m_mainDeletionQueue.PushFunction([=]() {
+        vkDestroyFence(m_device, m_uploadContext.m_uploadFence, nullptr);
+    });
 
     for (int i = 0; i < FRAME_AMOUNT; i++) {
         VK_CHECK(vkCreateFence(m_device, &fenceCreateInfo, nullptr, &m_frames[i].renderFence));
@@ -790,6 +813,90 @@ void VulkanEngine::InitPipelines() {
     });
 }
 
+void VulkanEngine::InitIMGUI() {
+    //1: create descriptor pool for IMGUI
+	// the size of the pool is very oversize, but it's copied from imgui demo itself.
+	VkDescriptorPoolSize pool_sizes[] =
+	{
+		{ VK_DESCRIPTOR_TYPE_SAMPLER, 1000 },
+		{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1000 },
+		{ VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1000 },
+		{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1000 },
+		{ VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, 1000 },
+		{ VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, 1000 },
+		{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1000 },
+		{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1000 },
+		{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1000 },
+		{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, 1000 },
+		{ VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, 1000 }
+	};
+
+	VkDescriptorPoolCreateInfo pool_info = {};
+	pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+	pool_info.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+	pool_info.maxSets = 1000;
+	pool_info.poolSizeCount = std::size(pool_sizes);
+	pool_info.pPoolSizes = pool_sizes;
+
+	VkDescriptorPool imguiPool;
+	VK_CHECK(vkCreateDescriptorPool(m_device, &pool_info, nullptr, &imguiPool));
+
+
+	// 2: initialize imgui library
+    IMGUI_CHECKVERSION();
+	//this initializes the core structures of imgui
+	ImGui::CreateContext();
+
+	//this initializes imgui for GLFW
+	ImGui_ImplGlfw_InitForVulkan(m_window, true);
+
+	//this initializes imgui for Vulkan
+	ImGui_ImplVulkan_InitInfo init_info = {};
+	init_info.Instance = m_instance;
+	init_info.PhysicalDevice = m_physicalDevice;
+	init_info.Device = m_device;
+	init_info.Queue = m_graphicsQueue;
+	init_info.DescriptorPool = imguiPool;
+	init_info.MinImageCount = 3;
+	init_info.ImageCount = 3;
+	init_info.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
+
+	ImGui_ImplVulkan_Init(&init_info, m_renderPass);
+
+    m_imguiVulkanWindow.Surface = m_surface;
+
+    /*const VkFormat requestSurfaceImageFormat[] = { VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_B8G8R8_UNORM, VK_FORMAT_R8G8B8_UNORM };
+    const VkColorSpaceKHR requestSurfaceColorSpace = VK_COLORSPACE_SRGB_NONLINEAR_KHR;
+    m_imguiVulkanWindow.SurfaceFormat = ImGui_ImplVulkanH_SelectSurfaceFormat(
+            m_physicalDevice, m_imguiVulkanWindow.Surface, requestSurfaceImageFormat,
+            (size_t)IM_ARRAYSIZE(requestSurfaceImageFormat), requestSurfaceColorSpace);
+
+    VkPresentModeKHR present_modes[] = { VK_PRESENT_MODE_FIFO_KHR };
+    m_imguiVulkanWindow.PresentMode = ImGui_ImplVulkanH_SelectPresentMode(
+            m_physicalDevice, m_imguiVulkanWindow.Surface,
+            &present_modes[0], IM_ARRAYSIZE(present_modes));
+
+    ImGui_ImplVulkanH_CreateOrResizeWindow(m_instance, m_physicalDevice, m_device, &m_imguiVulkanWindow,
+                                           m_graphicsQueueFamily, nullptr, m_windowExtent.width, m_windowExtent.height,
+                                           3);*/
+
+	//execute a gpu command to upload imgui font textures
+	ImmediateSubmit([&](VkCommandBuffer cmd) {
+        ImGui_ImplVulkan_CreateFontsTexture(cmd);
+    });
+
+    vkDeviceWaitIdle(m_device);
+
+	//clear font textures from cpu data
+	ImGui_ImplVulkan_DestroyFontUploadObjects();
+
+	//add the destroy the imgui created structures
+	m_mainDeletionQueue.PushFunction([=]() {
+        vkDestroyDescriptorPool(m_device, imguiPool, nullptr);
+        ImGui_ImplVulkan_Shutdown();
+    });
+}
+
 void VulkanEngine::Draw() {
     VK_CHECK(vkWaitForFences(m_device, 1, &GetCurrentFrame().renderFence, true, 1000000000));
 	VK_CHECK(vkResetFences(m_device, 1, &GetCurrentFrame().renderFence));
@@ -843,6 +950,8 @@ void VulkanEngine::Draw() {
 	vkCmdBeginRenderPass(cmd, &rpInfo, VK_SUBPASS_CONTENTS_INLINE);
 
     DrawObjects(cmd, m_renderables.data(), m_renderables.size());
+
+    ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmd);
 
     //finalize the render pass
 	vkCmdEndRenderPass(cmd);

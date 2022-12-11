@@ -17,6 +17,10 @@
 #define GLFW_EXPOSE_NATIVE_WIN32
 #include <GLFW/glfw3native.h>
 
+#include <imgui.h>
+#include <imgui_impl_glfw.h>
+#include <imgui_impl_vulkan.h>
+
 #include <VulkanTypes.hpp>
 #include <VulkanInitializer.hpp>
 #include <VulkanMesh.hpp>
@@ -125,6 +129,8 @@ private:
     uint32_t m_graphicsQueueFamily;
     VmaAllocator m_allocator;
 
+    ImGui_ImplVulkanH_Window m_imguiVulkanWindow;
+
     // --- RENDER OBJECTS ---
     VkSwapchainKHR m_swapchain; // from other articles
 	// image format expected by the windowing system
@@ -154,7 +160,7 @@ private:
     std::unordered_map<std::string, Material> m_materials;
     std::unordered_map<std::string, Mesh> m_mesh;
 
-    UploadContext m_context;
+    UploadContext m_uploadContext;
 
     GPUSceneData m_sceneParameters;
     AllocatedBuffer m_sceneParameterBuffer;
@@ -176,12 +182,12 @@ private:
 
     void LoadMeshes();
     void UploadMesh(Mesh& p_mesh);
+
     void ImmediateSubmit(std::function<void(VkCommandBuffer p_cmd)>&& function);
 
     void InitScene();
 
     void InitVulkan();
-    void InitIMGUI();
     void InitSwapchain();
     void InitCommands();
     void InitDefaultRenderpass();
@@ -189,6 +195,7 @@ private:
     void InitSyncStructures();
     void InitDescriptors();
     void InitPipelines();
+    void InitIMGUI();
 
     FrameData& GetCurrentFrame();
 
@@ -196,8 +203,6 @@ private:
 
     void Draw();
     void DrawObjects(VkCommandBuffer p_cmd, RenderObject* p_first, uint32_t count);
-
-    // size_t PadUniformBufferSize(size_t p_originalSize);
 };
 
 #endif //VULKAN_TERRAIN_VULKAN_ENGINE_HPP

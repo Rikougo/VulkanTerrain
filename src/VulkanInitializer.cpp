@@ -202,3 +202,29 @@ VkWriteDescriptorSet VulkanInit::WriteDescriptorSet(VkDescriptorType p_type, VkD
 
 	return l_write;
 }
+
+VkCommandBufferBeginInfo VulkanInit::CommandBufferBeginInfo(VkCommandBufferUsageFlags p_flags /*= 0*/) {
+    VkCommandBufferBeginInfo l_info = {};
+    l_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    l_info.pNext = nullptr;
+
+    l_info.pInheritanceInfo = nullptr;
+    l_info.flags = p_flags;
+	return l_info;
+};
+
+VkSubmitInfo VulkanInit::SubmitInfo(VkCommandBuffer *p_cmd) {
+    VkSubmitInfo l_info = {};
+    l_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    l_info.pNext = nullptr;
+
+    l_info.waitSemaphoreCount = 0;
+    l_info.pWaitSemaphores = nullptr;
+    l_info.pWaitDstStageMask = nullptr;
+    l_info.commandBufferCount = 1;
+    l_info.pCommandBuffers = p_cmd;
+    l_info.signalSemaphoreCount = 0;
+    l_info.pSignalSemaphores = nullptr;
+
+	return l_info;
+};

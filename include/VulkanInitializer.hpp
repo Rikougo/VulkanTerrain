@@ -28,6 +28,9 @@ namespace VulkanInit {
 
     VkDescriptorSetLayoutBinding DescriptorSetLayoutBinding(VkDescriptorType p_type, VkShaderStageFlags p_stageFlags, uint32_t p_binding);
     VkWriteDescriptorSet WriteDescriptorSet(VkDescriptorType p_type, VkDescriptorSet p_dstSet, VkDescriptorBufferInfo* p_bufferInfo , uint32_t p_binding);
+
+    VkCommandBufferBeginInfo CommandBufferBeginInfo(VkCommandBufferUsageFlags p_flags = 0);
+    VkSubmitInfo SubmitInfo(VkCommandBuffer *p_cmd);
 }
 
 #endif //VULKAN_TERRAIN_VULKAN_INITIALIZER_HPP
