@@ -115,6 +115,7 @@ private:
     bool m_initialized = false;
     int m_frameNumber = 0;
     VkExtent2D m_windowExtent{1280, 720};
+    VkExtent2D m_desiredWindowExtent{1280, 720};
 
     // --- CORE OBJECTS ---
     GLFWwindow* m_window = nullptr;
@@ -148,6 +149,7 @@ private:
     std::vector<VkFramebuffer> m_framebuffers;
 
     FrameData m_frames[FRAME_AMOUNT];
+    bool m_framebufferResized = false;
 
     VkDescriptorPool m_descriptorPool;
     VkDescriptorSetLayout m_globalSetLayout;
@@ -174,7 +176,7 @@ public:
 
 private:
     AllocatedBuffer CreateBuffer(size_t p_allocSize, VkBufferUsageFlags p_usage, VmaMemoryUsage p_memoryUsage);
-    size_t PadUniformBufferSize(size_t p_originalSize);
+    size_t PadUniformBufferSize(size_t p_originalSize) const;
 
     Mesh* GetMesh(const std::string &p_name);
     Material* GetMaterial(const std::string &p_name);
@@ -197,12 +199,17 @@ private:
     void InitPipelines();
     void InitIMGUI();
 
+    void CleanupSwapchain();
+    void RecreateSwapchain();
+
     FrameData& GetCurrentFrame();
 
     bool LoadShaderModule(const std::filesystem::path &p_path, VkShaderModule *p_outModule);
 
     void Draw();
     void DrawObjects(VkCommandBuffer p_cmd, RenderObject* p_first, uint32_t count);
+
+    static void FramebufferSizeCallback(GLFWwindow* p_window, int p_width, int p_height);
 };
 
 #endif //VULKAN_TERRAIN_VULKAN_ENGINE_HPP

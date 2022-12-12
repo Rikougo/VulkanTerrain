@@ -29,6 +29,7 @@ void VulkanEngine::Init() {
             static_cast<int>(m_windowExtent.height),
             "Vulkan", nullptr, nullptr);
     glfwSetWindowUserPointer(m_window, this);
+    glfwSetFramebufferSizeCallback(m_window, FramebufferSizeCallback);
 
     InitVulkan();
     InitSwapchain();
@@ -73,6 +74,8 @@ void VulkanEngine::Cleanup() {
 
         m_mainDeletionQueue.Flush();
 
+        CleanupSwapchain();
+
         vmaDestroyAllocator(m_allocator);
 
 		vkDestroyDevice(m_device, nullptr);
@@ -96,7 +99,7 @@ AllocatedBuffer VulkanEngine::CreateBuffer(size_t p_allocSize, VkBufferUsageFlag
 	VmaAllocationCreateInfo l_vmaAllocInfo = {};
     l_vmaAllocInfo.usage = p_memoryUsage;
 
-	AllocatedBuffer l_newBuffer;
+	AllocatedBuffer l_newBuffer{};
 
 	//allocate the buffer
 	VK_CHECK(vmaCreateBuffer(m_allocator, &l_bufferInfo, &l_vmaAllocInfo,
@@ -107,15 +110,14 @@ AllocatedBuffer VulkanEngine::CreateBuffer(size_t p_allocSize, VkBufferUsageFlag
 	return l_newBuffer;
 }
 
-size_t VulkanEngine::PadUniformBufferSize(size_t p_originalSize)
-{
+size_t VulkanEngine::PadUniformBufferSize(size_t p_originalSize) const {
 	// Calculate required alignment based on minimum device offset alignment
-	size_t minUboAlignment = m_physicalProperties.limits.minUniformBufferOffsetAlignment;
-	size_t alignedSize = p_originalSize;
-	if (minUboAlignment > 0) {
-		alignedSize = (alignedSize + minUboAlignment - 1) & ~(minUboAlignment - 1);
+	size_t l_minUboAlignment = m_physicalProperties.limits.minUniformBufferOffsetAlignment;
+	size_t l_alignedSize = p_originalSize;
+	if (l_minUboAlignment > 0) {
+        l_alignedSize = (l_alignedSize + l_minUboAlignment - 1) & ~(l_minUboAlignment - 1);
 	}
-	return alignedSize;
+	return l_alignedSize;
 }
 
 Material* VulkanEngine::CreateMaterial(VkPipeline p_pipeline, VkPipelineLayout p_layout, const std::string &p_name) {
@@ -166,13 +168,13 @@ void VulkanEngine::UploadMesh(Mesh &p_mesh) {
 	stagingBufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
 
 	//let the VMA library know that this data should be on CPU RAM
-	VmaAllocationCreateInfo vmaallocInfo = {};
-	vmaallocInfo.usage = VMA_MEMORY_USAGE_CPU_ONLY;
+	VmaAllocationCreateInfo l_vmaAllocInfo = {};
+    l_vmaAllocInfo.usage = VMA_MEMORY_USAGE_CPU_ONLY;
 
 	AllocatedBuffer stagingBuffer{};
 
 	//allocate the buffer
-	VK_CHECK(vmaCreateBuffer(m_allocator, &stagingBufferInfo, &vmaallocInfo,
+	VK_CHECK(vmaCreateBuffer(m_allocator, &stagingBufferInfo, &l_vmaAllocInfo,
 		&stagingBuffer.m_buffer,
 		&stagingBuffer.m_allocation,
 		nullptr));
@@ -194,10 +196,10 @@ void VulkanEngine::UploadMesh(Mesh &p_mesh) {
 
 
 	//let the VMA library know that this data should be writeable by CPU, but also readable by GPU
-	vmaallocInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+	l_vmaAllocInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
 
 	//allocate the buffer
-	VK_CHECK(vmaCreateBuffer(m_allocator, &vertexBufferInfo, &vmaallocInfo,
+	VK_CHECK(vmaCreateBuffer(m_allocator, &vertexBufferInfo, &l_vmaAllocInfo,
 		&p_mesh.m_vertexBuffer.m_buffer,
 		&p_mesh.m_vertexBuffer.m_allocation,
 		nullptr));
@@ -356,32 +358,35 @@ void VulkanEngine::InitSwapchain() {
 	m_depthFormat = VK_FORMAT_D32_SFLOAT;
 
 	//the depth image will be an image with the format we selected and Depth Attachment usage flag
-	VkImageCreateInfo dimg_info = VulkanInit::ImageCreateInfo(m_depthFormat, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, depthImageExtent);
+	VkImageCreateInfo l_depthImgInfo = VulkanInit::ImageCreateInfo(
+            m_depthFormat, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, depthImageExtent);
 
 	//for the depth image, we want to allocate it from GPU local memory
-	VmaAllocationCreateInfo dimg_allocinfo = {};
-	dimg_allocinfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
-	dimg_allocinfo.requiredFlags = VkMemoryPropertyFlags(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+	VmaAllocationCreateInfo l_depthImgAllocinfo = {};
+    l_depthImgAllocinfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+    l_depthImgAllocinfo.requiredFlags = VkMemoryPropertyFlags(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
 	//allocate and create the image
 	vmaCreateImage(
             m_allocator,
-            &dimg_info,
-            &dimg_allocinfo,
+            &l_depthImgInfo,
+            &l_depthImgAllocinfo,
             &m_depthImage.m_image,
             &m_depthImage.m_allocation,
             nullptr);
 
 	//build an image-view for the depth image to use for rendering
-	VkImageViewCreateInfo dview_info = VulkanInit::ImageViewCreateInfo(m_depthFormat, m_depthImage.m_image, VK_IMAGE_ASPECT_DEPTH_BIT);
+	VkImageViewCreateInfo l_depthViewInfo = VulkanInit::ImageViewCreateInfo(m_depthFormat, m_depthImage.m_image, VK_IMAGE_ASPECT_DEPTH_BIT);
 
-	VK_CHECK(vkCreateImageView(m_device, &dview_info, nullptr, &m_depthImageView));
+	VK_CHECK(vkCreateImageView(m_device, &l_depthViewInfo, nullptr, &m_depthImageView));
 
-    m_mainDeletionQueue.PushFunction([=]() {
+    /*m_mainDeletionQueue.PushFunction([=]() {
         vkDestroySwapchainKHR(m_device, m_swapchain, nullptr);
         vkDestroyImageView(m_device, m_depthImageView, nullptr);
         vmaDestroyImage(m_allocator, m_depthImage.m_image, m_depthImage.m_allocation);
-    });
+    });*/
+
+    std::cout << "Create Swapchain, extent " << m_windowExtent.width << "x" << m_windowExtent.height << std::endl;
 }
 
 void VulkanEngine::InitCommands() {
@@ -507,15 +512,14 @@ void VulkanEngine::InitDefaultRenderpass() {
 
 void VulkanEngine::InitFramebuffers() {
     //create the framebuffers for the swapchain images. This will connect the render-pass to the images for rendering
-	VkFramebufferCreateInfo fb_info = {};
-	fb_info.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-	fb_info.pNext = nullptr;
+	VkFramebufferCreateInfo l_framebufferInfo = {};
+    l_framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+    l_framebufferInfo.pNext = nullptr;
 
-	fb_info.renderPass = m_renderPass;
-	fb_info.attachmentCount = 1;
-	fb_info.width = m_windowExtent.width;
-	fb_info.height = m_windowExtent.height;
-	fb_info.layers = 1;
+    l_framebufferInfo.renderPass = m_renderPass;
+    l_framebufferInfo.width = m_windowExtent.width;
+    l_framebufferInfo.height = m_windowExtent.height;
+    l_framebufferInfo.layers = 1;
 
 	//grab how many images we have in the swapchain
 	const size_t l_swapchainImageCount = m_swapchainImages.size();
@@ -527,14 +531,14 @@ void VulkanEngine::InitFramebuffers() {
         l_attachments[0] = m_swapchainImageViews[i];
         l_attachments[1] = m_depthImageView;
 
-        fb_info.pAttachments = l_attachments;
-        fb_info.attachmentCount = 2;
-		VK_CHECK(vkCreateFramebuffer(m_device, &fb_info, nullptr, &m_framebuffers[i]));
+        l_framebufferInfo.pAttachments = l_attachments;
+        l_framebufferInfo.attachmentCount = 2;
+		VK_CHECK(vkCreateFramebuffer(m_device, &l_framebufferInfo, nullptr, &m_framebuffers[i]));
 
-        m_mainDeletionQueue.PushFunction([=]() {
+        /*m_mainDeletionQueue.PushFunction([=]() {
 			vkDestroyFramebuffer(m_device, m_framebuffers[i], nullptr);
 			vkDestroyImageView(m_device, m_swapchainImageViews[i], nullptr);
-    	});
+    	});*/
 	}
 }
 
@@ -897,13 +901,49 @@ void VulkanEngine::InitIMGUI() {
     });
 }
 
+void VulkanEngine::CleanupSwapchain() {
+    vkDestroySwapchainKHR(m_device, m_swapchain, nullptr);
+    vkDestroyImageView(m_device, m_depthImageView, nullptr);
+    vmaDestroyImage(m_allocator, m_depthImage.m_image, m_depthImage.m_allocation);
+
+    const size_t l_swapchainImageCount = m_swapchainImages.size();
+    for (size_t i = 0; i < l_swapchainImageCount; i++) {
+        vkDestroyFramebuffer(m_device, m_framebuffers[i], nullptr);
+        vkDestroyImageView(m_device, m_swapchainImageViews[i], nullptr);
+	}
+}
+
+void VulkanEngine::RecreateSwapchain() {
+    vkDeviceWaitIdle(m_device);
+
+    m_windowExtent = m_desiredWindowExtent;
+
+    // cleanup swapchain
+    CleanupSwapchain();
+
+    // create swapchain
+    InitSwapchain();
+    // create framebuffers (& imageviews)
+    InitFramebuffers();
+}
+
 void VulkanEngine::Draw() {
-    VK_CHECK(vkWaitForFences(m_device, 1, &GetCurrentFrame().renderFence, true, 1000000000));
-	VK_CHECK(vkResetFences(m_device, 1, &GetCurrentFrame().renderFence));
+    VK_CHECK(vkWaitForFences(m_device, 1, &GetCurrentFrame().renderFence, VK_TRUE, 1000000000));
 
     //request image from the swapchain, one second timeout
 	uint32_t swapchainImageIndex;
-	VK_CHECK(vkAcquireNextImageKHR(m_device, m_swapchain, 1000000000, GetCurrentFrame().presentSemaphore, nullptr, &swapchainImageIndex));
+	VkResult l_acquireResult = vkAcquireNextImageKHR(m_device, m_swapchain, 1000000000,
+                                                     GetCurrentFrame().presentSemaphore, nullptr,
+                                                     &swapchainImageIndex);
+
+    if (l_acquireResult == VK_ERROR_OUT_OF_DATE_KHR) {
+        RecreateSwapchain();
+        return;
+    } else if (l_acquireResult != VK_SUCCESS && l_acquireResult != VK_SUBOPTIMAL_KHR) {
+        throw std::runtime_error("Failed to acquire swapchain image.");
+    }
+
+	VK_CHECK(vkResetFences(m_device, 1, &GetCurrentFrame().renderFence));
 
     //now that we are sure that the commands finished executing, we can safely reset the command buffer to begin recording again.
 	VK_CHECK(vkResetCommandBuffer(GetCurrentFrame().mainCommandBuffer, 0));
@@ -983,7 +1023,7 @@ void VulkanEngine::Draw() {
 	// _renderFence will now block until the graphic commands finish execution
 	VK_CHECK(vkQueueSubmit(m_graphicsQueue, 1, &submit, GetCurrentFrame().renderFence));
 
-    	// this will put the image we just rendered into the visible window.
+    // this will put the image we just rendered into the visible window.
 	// we want to wait on the _renderSemaphore for that,
 	// as it's necessary that drawing commands have finished before the image is displayed to the user
 	VkPresentInfoKHR presentInfo = {};
@@ -998,7 +1038,14 @@ void VulkanEngine::Draw() {
 
 	presentInfo.pImageIndices = &swapchainImageIndex;
 
-	VK_CHECK(vkQueuePresentKHR(m_graphicsQueue, &presentInfo));
+	VkResult l_presentResult = vkQueuePresentKHR(m_graphicsQueue, &presentInfo);
+
+    if (l_presentResult == VK_ERROR_OUT_OF_DATE_KHR || l_presentResult == VK_SUBOPTIMAL_KHR || m_framebufferResized) {
+        RecreateSwapchain();
+        m_framebufferResized = false;
+    } else if (l_presentResult != VK_SUCCESS) {
+        throw std::runtime_error("failed to present swap chain image!");
+    }
 
 	//increase the number of frames drawn
 	m_frameNumber++;
@@ -1010,7 +1057,10 @@ void VulkanEngine::DrawObjects(VkCommandBuffer p_cmd, RenderObject* p_first, uin
 
 	glm::mat4 view = glm::translate(glm::mat4(1.f), camPos);
 	//camera projection
-	glm::mat4 projection = glm::perspective(glm::radians(70.f), 1700.f / 900.f, 0.1f, 200.0f);
+	glm::mat4 projection = glm::perspective(
+            glm::radians(70.f),
+            static_cast<float>(m_windowExtent.width) / static_cast<float>(m_windowExtent.height),
+            0.1f, 200.0f);
 	projection[1][1] *= -1;
 
 	//fill a GPU camera data struct
@@ -1065,6 +1115,20 @@ void VulkanEngine::DrawObjects(VkCommandBuffer p_cmd, RenderObject* p_first, uin
 		if (object.material != lastMaterial) {
 			vkCmdBindPipeline(p_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, object.material->pipeline);
 			lastMaterial = object.material;
+
+            VkViewport viewport{};
+            viewport.x = 0.0f;
+            viewport.y = 0.0f;
+            viewport.width = (float) m_windowExtent.width;
+            viewport.height = (float) m_windowExtent.height;
+            viewport.minDepth = 0.0f;
+            viewport.maxDepth = 1.0f;
+            vkCmdSetViewport(p_cmd, 0, 1, &viewport);
+
+            VkRect2D scissor{};
+            scissor.offset = {0, 0};
+            scissor.extent = m_windowExtent;
+            vkCmdSetScissor(p_cmd, 0, 1, &scissor);
 
             uint32_t l_uniformOffset = PadUniformBufferSize(sizeof(GPUSceneData)) * frameIndex;
             vkCmdBindDescriptorSets(
@@ -1127,6 +1191,17 @@ FrameData &VulkanEngine::GetCurrentFrame() {
     return m_frames[m_frameNumber % FRAME_AMOUNT];
 }
 
+void VulkanEngine::FramebufferSizeCallback(GLFWwindow* p_window, int p_width, int p_height) {
+    auto l_engine = reinterpret_cast<VulkanEngine*>(glfwGetWindowUserPointer(p_window));
+    auto l_width = static_cast<uint32_t>(p_width), l_height = static_cast<uint32_t>(p_height);
+    if (l_width != l_engine->m_windowExtent.width || l_height != l_engine->m_windowExtent.height) {
+        l_engine->m_framebufferResized = true;
+    }
+
+    l_engine->m_desiredWindowExtent.width = l_width;
+    l_engine->m_desiredWindowExtent.height = l_height;
+}
+
 VkPipeline PipelineBuilder::BuildPipeline(VkDevice device, VkRenderPass pass) {
     //make viewport state from our stored viewport and scissor.
     //at the moment we won't support multiple viewports or scissors
@@ -1135,9 +1210,9 @@ VkPipeline PipelineBuilder::BuildPipeline(VkDevice device, VkRenderPass pass) {
     viewportState.pNext = nullptr;
 
     viewportState.viewportCount = 1;
-    viewportState.pViewports = &m_viewport;
+    // viewportState.pViewports = &m_viewport;
     viewportState.scissorCount = 1;
-    viewportState.pScissors = &m_scissor;
+    // viewportState.pScissors = &m_scissor;
 
     //setup dummy color blending. We aren't using transparent objects yet
     //the blending is just "no blend", but we do write to the color attachment
@@ -1156,6 +1231,16 @@ VkPipeline PipelineBuilder::BuildPipeline(VkDevice device, VkRenderPass pass) {
 	pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
 	pipelineInfo.pNext = nullptr;
 
+    std::vector<VkDynamicState> dynamicStates = {
+            VK_DYNAMIC_STATE_VIEWPORT,
+            VK_DYNAMIC_STATE_SCISSOR
+        };
+    VkPipelineDynamicStateCreateInfo dynamicState{};
+    dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    dynamicState.dynamicStateCount = static_cast<uint32_t>(dynamicStates.size());
+    dynamicState.pDynamicStates = dynamicStates.data();
+
+
 	pipelineInfo.stageCount = m_shaderStages.size();
 	pipelineInfo.pStages = m_shaderStages.data();
 	pipelineInfo.pVertexInputState = &m_vertexInputInfo;
@@ -1164,6 +1249,7 @@ VkPipeline PipelineBuilder::BuildPipeline(VkDevice device, VkRenderPass pass) {
 	pipelineInfo.pRasterizationState = &m_rasterizer;
 	pipelineInfo.pMultisampleState = &m_multisampling;
 	pipelineInfo.pColorBlendState = &colorBlending;
+    pipelineInfo.pDynamicState = &dynamicState;
 	pipelineInfo.layout = m_pipelineLayout;
 	pipelineInfo.renderPass = pass;
 	pipelineInfo.subpass = 0;
