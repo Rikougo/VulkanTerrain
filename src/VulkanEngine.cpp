@@ -19,7 +19,12 @@
 		}                                                           \
 	} while (0)
 
+
+
 void VulkanEngine::Init() {
+    m_showDemoWindow = new bool(false);
+    m_showInspectorWindow = new bool(false);
+
     glfwInit();
 
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
@@ -54,12 +59,7 @@ void VulkanEngine::Run() {
     while (!glfwWindowShouldClose(m_window)) {
         glfwPollEvents();
 
-        ImGui_ImplVulkan_NewFrame();
-        ImGui_ImplGlfw_NewFrame();
-        ImGui::NewFrame();
-
-        ImGui::ShowDemoWindow(&l_showDemoWindow);
-        ImGui::Render();
+        DrawUI();
         Draw();
     }
 
@@ -147,14 +147,23 @@ Mesh* VulkanEngine::GetMesh(const std::string& p_name) {
 }
 
 void VulkanEngine::LoadMeshes() {
-    Mesh l_suzanne{};
-    //make the array 3 vertices long
-    l_suzanne.LoadFromObj("./assets/suzanne.obj");
-	//we don't care about the vertex normals
+    const std::filesystem::path l_meshPath = std::filesystem::current_path() / "assets" / "mesh";
 
-	UploadMesh(l_suzanne);
+    for(auto const& l_directoryEntry : std::filesystem::directory_iterator(l_meshPath)) {
+        if (l_directoryEntry.is_regular_file()) {
+            std::string l_fileName = l_directoryEntry.path().filename().string();
+            std::string l_fileExtension = l_directoryEntry.path().extension().string();
+            if (l_fileExtension == ".obj") {
+                std::string l_meshName = l_fileName.substr(0, l_fileName.size() - 4);
+                Mesh l_mesh{};
+                l_mesh.LoadFromObj(l_directoryEntry.path());
+                UploadMesh(l_mesh);
 
-    m_mesh["suzanne"] = l_suzanne;
+                m_mesh[l_meshName] = l_mesh;
+            }
+        }
+    }
+
 }
 
 void VulkanEngine::UploadMesh(Mesh &p_mesh) {
@@ -248,9 +257,18 @@ void VulkanEngine::ImmediateSubmit(std::function<void(VkCommandBuffer p_cmd)>&& 
 }
 
 void VulkanEngine::InitScene() {
+    if (m_mesh.size() == 0) {
+        std::cerr << "No meshes loaded, scene is empty" << std::endl;
+        return;
+    }
+
+    std::string l_defaultMesh = m_mesh.begin()->first;
+
     RenderObject monkey{};
-	monkey.mesh = GetMesh("suzanne");
-	monkey.material = GetMaterial("defaultmesh");
+	monkey.mesh = GetMesh(l_defaultMesh);
+    monkey.meshName = l_defaultMesh;
+	monkey.material = GetMaterial("wiremesh");
+    monkey.materialName = "wiremesh";
 	monkey.transformMatrix = glm::mat4{ 1.0f };
 
 	m_renderables.push_back(monkey);
@@ -259,11 +277,12 @@ void VulkanEngine::InitScene() {
 		for (int y = -20; y <= 20; y++) {
 
 			RenderObject l_smallMonkey{};
-            l_smallMonkey.mesh = GetMesh("suzanne");
-            l_smallMonkey.material = GetMaterial("defaultmesh");
-			glm::mat4 translation = glm::translate(glm::mat4{ 1.0 }, glm::vec3(x, 0, y));
-			glm::mat4 scale = glm::scale(glm::mat4{ 1.0 }, glm::vec3(0.2, 0.2, 0.2));
-			l_smallMonkey.transformMatrix = translation * scale;
+            l_smallMonkey.meshName = l_defaultMesh;
+            l_smallMonkey.mesh = GetMesh(l_defaultMesh);
+            l_smallMonkey.material = GetMaterial("wiremesh");
+            l_smallMonkey.materialName = "wiremesh";
+			l_smallMonkey.position = glm::vec3(x, 0, y);
+            l_smallMonkey.scale = glm::vec3(0.2, 0.2, 0.2);
 
 			m_renderables.push_back(l_smallMonkey);
 		}
@@ -720,23 +739,14 @@ void VulkanEngine::InitDescriptors() {
 }
 
 void VulkanEngine::InitPipelines() {
-    VkShaderModule triangleFragShader;
-	if (!LoadShaderModule("./shaders/bin/main_frag.spv", &triangleFragShader))
-	{
-		std::cout << "Error when building the triangle fragment shader module" << std::endl;
-	}
-	else {
-		std::cout << "Triangle fragment shader successfully loaded" << std::endl;
-	}
+    VkShaderModule l_mainFragShader, l_meshVertShader;
+	if (!LoadShaderModule("./shaders/bin/main_frag.spv", &l_mainFragShader))
+		throw std::runtime_error("Error when building the main fragment shader module");
+	else std::cout << "Main fragment shader successfully loaded" << std::endl;
 
-	VkShaderModule meshVertShader;
-	if (!LoadShaderModule("./shaders/bin/mesh_vert.spv", &meshVertShader))
-	{
-		std::cout << "Error when building the triangle vertex shader module" << std::endl;
-	}
-	else {
-		std::cout << "Red Triangle vertex shader successfully loaded" << std::endl;
-	}
+	if (!LoadShaderModule("./shaders/bin/mesh_vert.spv", &l_meshVertShader))
+		throw std::runtime_error("Error when building the mesh vertex shader module");
+	else std::cout << "Red Triangle vertex shader successfully loaded" << std::endl;
 
     VkPipelineLayoutCreateInfo l_meshPipelineLayoutInfo = VulkanInit::PipelineLayoutCreateInfo();
     l_meshPipelineLayoutInfo.pushConstantRangeCount = 0;
@@ -745,13 +755,14 @@ void VulkanEngine::InitPipelines() {
     l_meshPipelineLayoutInfo.setLayoutCount = 2;
     l_meshPipelineLayoutInfo.pSetLayouts = setLayouts;
 
-    VK_CHECK(vkCreatePipelineLayout(m_device, &l_meshPipelineLayoutInfo, nullptr, &m_meshPipelineLayout));
+    VkPipelineLayout l_meshPipelineLayout;
+    VK_CHECK(vkCreatePipelineLayout(m_device, &l_meshPipelineLayoutInfo, nullptr, &l_meshPipelineLayout));
 
     //build the stage-create-info for both vertex and fragment stages. This lets the pipeline know the shader modules per stage
 	PipelineBuilder pipelineBuilder;
 
 	pipelineBuilder.m_shaderStages.push_back(VulkanInit::PipelineShaderStageCreateInfo(
-            VK_SHADER_STAGE_FRAGMENT_BIT, triangleFragShader));
+            VK_SHADER_STAGE_FRAGMENT_BIT, l_mainFragShader));
 
 	//vertex input controls how to read vertices from vertex buffers. We aren't using it yet
 	pipelineBuilder.m_vertexInputInfo = VulkanInit::VertexInputStateCreateInfo();
@@ -773,10 +784,8 @@ void VulkanEngine::InitPipelines() {
 
 	//configure the rasterizer to draw filled triangles
 	pipelineBuilder.m_rasterizer = VulkanInit::RasterizationStateCreateInfo(VK_POLYGON_MODE_FILL);
-
 	//we don't use multisampling, so just run the default one
 	pipelineBuilder.m_multisampling = VulkanInit::MultisampleStateCreateInfo();
-
 	//a single blend attachment with no blending and writing to RGBA
 	pipelineBuilder.m_colorBlendAttachment = VulkanInit::ColorBlendAttachmentState();
     pipelineBuilder.m_depthStencil = VulkanInit::DepthStencilCreateInfo(true, true, VK_COMPARE_OP_LESS_OR_EQUAL);
@@ -796,24 +805,29 @@ void VulkanEngine::InitPipelines() {
 
 	//add the other shaders
 	pipelineBuilder.m_shaderStages.push_back(
-            VulkanInit::PipelineShaderStageCreateInfo(VK_SHADER_STAGE_VERTEX_BIT, meshVertShader));
+            VulkanInit::PipelineShaderStageCreateInfo(VK_SHADER_STAGE_VERTEX_BIT, l_meshVertShader));
 
-	//make sure that triangleFragShader is holding the compiled colored_triangle.frag
+	//make sure that l_mainFragShader is holding the compiled colored_triangle.frag
 	pipelineBuilder.m_shaderStages.push_back(
-            VulkanInit::PipelineShaderStageCreateInfo(VK_SHADER_STAGE_FRAGMENT_BIT, triangleFragShader));
-    pipelineBuilder.m_pipelineLayout = m_meshPipelineLayout;
+            VulkanInit::PipelineShaderStageCreateInfo(VK_SHADER_STAGE_FRAGMENT_BIT, l_mainFragShader));
+    pipelineBuilder.m_pipelineLayout = l_meshPipelineLayout;
 
 	//build the mesh triangle pipeline
-	m_meshPipeline = pipelineBuilder.BuildPipeline(m_device, m_renderPass);
+	VkPipeline l_meshPipeline = pipelineBuilder.BuildPipeline(m_device, m_renderPass);
 
-    CreateMaterial(m_meshPipeline, m_meshPipelineLayout, "defaultmesh");
+    CreateMaterial(l_meshPipeline, l_meshPipelineLayout, "defaultmesh");
+
+    pipelineBuilder.m_rasterizer.polygonMode = VK_POLYGON_MODE_LINE;
+    VkPipeline l_meshWirePipeline = pipelineBuilder.BuildPipeline(m_device, m_renderPass);
+    CreateMaterial(l_meshWirePipeline, l_meshPipelineLayout, "wiremesh");
 
     m_mainDeletionQueue.PushFunction([=]() {
-        vkDestroyShaderModule(m_device, triangleFragShader, nullptr);
-        vkDestroyShaderModule(m_device, meshVertShader, nullptr);
-        vkDestroyPipeline(m_device, m_meshPipeline, nullptr);
+        vkDestroyShaderModule(m_device, l_mainFragShader, nullptr);
+        vkDestroyShaderModule(m_device, l_meshVertShader, nullptr);
 
-		vkDestroyPipelineLayout(m_device, m_meshPipelineLayout, nullptr);
+        vkDestroyPipeline(m_device, l_meshPipeline, nullptr);
+        vkDestroyPipeline(m_device, l_meshWirePipeline, nullptr);
+		vkDestroyPipelineLayout(m_device, l_meshPipelineLayout, nullptr);
     });
 }
 
@@ -925,6 +939,69 @@ void VulkanEngine::RecreateSwapchain() {
     InitSwapchain();
     // create framebuffers (& imageviews)
     InitFramebuffers();
+}
+
+void VulkanEngine::DrawUI() {
+    ImGui_ImplVulkan_NewFrame();
+    ImGui_ImplGlfw_NewFrame();
+    ImGui::NewFrame();
+
+    ImGui::BeginMainMenuBar();
+    if (ImGui::MenuItem("DemoWindow")) *m_showDemoWindow = !*m_showDemoWindow;
+    if (ImGui::MenuItem("InspectorWindow")) *m_showInspectorWindow = !*m_showInspectorWindow;
+    ImGui::EndMainMenuBar();
+
+    if (*m_showDemoWindow) ImGui::ShowDemoWindow(m_showDemoWindow);
+
+    if (*m_showInspectorWindow) {
+        if (ImGui::Begin("Inspector", m_showInspectorWindow)) {
+            uint32_t l_id{0};
+            for(auto &l_renderObject : m_renderables) {
+                constexpr ImGuiTreeNodeFlags BASE_NODE_FLAGS = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_OpenOnDoubleClick;
+
+                bool node_open = ImGui::TreeNodeEx(std::to_string(l_id).c_str(), BASE_NODE_FLAGS, "%s(%d)",
+                                               l_renderObject.meshName.c_str(), l_id);
+
+                if (node_open) {
+                    if (ImGui::BeginCombo("##Mesh", l_renderObject.meshName.c_str(), ImGuiComboFlags_NoArrowButton)) {
+                        for(auto &l_mesh : m_mesh) {
+                            bool is_selected = (l_renderObject.meshName == l_mesh.first);
+                            if (ImGui::Selectable(l_mesh.first.c_str(), is_selected)) {
+                                l_renderObject.meshName = l_mesh.first;
+                                l_renderObject.mesh = &l_mesh.second;
+                            }
+                            if (is_selected) {
+                                ImGui::SetItemDefaultFocus();
+                            }
+                        }
+                        ImGui::EndCombo();
+                    }
+                    if (ImGui::BeginCombo("##Material", l_renderObject.materialName.c_str(), ImGuiComboFlags_NoArrowButton)) {
+                        for(auto &l_material : m_materials) {
+                            bool is_selected = (l_renderObject.materialName == l_material.first);
+                            if (ImGui::Selectable(l_material.first.c_str(), is_selected)) {
+                                l_renderObject.materialName = l_material.first;
+                                l_renderObject.material = &l_material.second;
+                            }
+                            if (is_selected) {
+                                ImGui::SetItemDefaultFocus();
+                            }
+                        }
+                        ImGui::EndCombo();
+                    }
+                    ImGui::SliderFloat3(std::format("Position##{}", l_id).c_str(), &l_renderObject.position.x, -10.0f, 10.0f);
+                    ImGui::SliderFloat3(std::format("Scale##{}", l_id).c_str(), &l_renderObject.scale.x, 1.0f, 10.0f);
+                    ImGui::TreePop();
+                }
+
+                l_id++;
+            }
+
+        }
+        ImGui::End();
+    }
+
+    ImGui::Render();
 }
 
 void VulkanEngine::Draw() {
@@ -1100,7 +1177,10 @@ void VulkanEngine::DrawObjects(VkCommandBuffer p_cmd, RenderObject* p_first, uin
     for (int i = 0; i < p_count; i++)
     {
         RenderObject& object = p_first[i];
-        objectSSBO[i].modelMatrix = object.transformMatrix;
+        glm::mat4 l_transform{1.0f};
+        l_transform = glm::translate(l_transform, object.position);
+        l_transform = glm::scale(l_transform, object.scale);
+        objectSSBO[i].modelMatrix = l_transform;
     }
 
     vmaUnmapMemory(m_allocator, GetCurrentFrame().objectBuffer.m_allocation);

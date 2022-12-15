@@ -10,6 +10,7 @@
 #include <fstream>
 #include <functional>
 #include <deque>
+#include <format>
 
 #define VK_USE_PLATFORM_WIN32_KHR
 #define GLFW_INCLUDE_VULKAN
@@ -69,7 +70,13 @@ struct Material {
 struct RenderObject {
     Mesh* mesh;
     Material* material;
+    glm::vec3 position{0.0f};
+    glm::vec3 rotation{0.0f};
+    glm::vec3 scale{1.0f};
     glm::mat4 transformMatrix;
+
+    std::string meshName;
+    std::string materialName;
 };
 
 struct GPUCameraData{
@@ -155,9 +162,7 @@ private:
     VkDescriptorSetLayout m_globalSetLayout;
     VkDescriptorSetLayout m_objectSetLayout;
 
-    VkPipelineLayout m_meshPipelineLayout;
-    VkPipeline m_meshPipeline;
-
+    // --- SCENE STUFF ---
     std::vector<RenderObject> m_renderables;
     std::unordered_map<std::string, Material> m_materials;
     std::unordered_map<std::string, Mesh> m_mesh;
@@ -166,6 +171,10 @@ private:
 
     GPUSceneData m_sceneParameters;
     AllocatedBuffer m_sceneParameterBuffer;
+
+private:
+    bool* m_showDemoWindow;
+    bool* m_showInspectorWindow;
 public:
     // VulkanEngine() = default;
 
@@ -206,6 +215,7 @@ private:
 
     bool LoadShaderModule(const std::filesystem::path &p_path, VkShaderModule *p_outModule);
 
+    void DrawUI();
     void Draw();
     void DrawObjects(VkCommandBuffer p_cmd, RenderObject* p_first, uint32_t count);
 
