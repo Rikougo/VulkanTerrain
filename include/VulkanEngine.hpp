@@ -25,6 +25,7 @@
 #include <VulkanTypes.hpp>
 #include <VulkanInitializer.hpp>
 #include <VulkanMesh.hpp>
+#include <VulkanTextures.hpp>
 
 #include <VkBootstrap.h>
 #include <glm/glm.hpp>
@@ -63,8 +64,18 @@ struct FrameData {
 };
 
 struct Material {
+    VkDescriptorSet textureSet{VK_NULL_HANDLE};
+    VkDescriptorSet heightmapSet{VK_NULL_HANDLE};
     VkPipeline pipeline;
     VkPipelineLayout pipelineLayout;
+};
+
+struct Camera {
+    glm::vec3 position;
+    glm::vec3 rotation;
+    glm::vec3 forward;
+    glm::vec3 right;
+    float speed = 5.0f;
 };
 
 struct RenderObject {
@@ -79,16 +90,23 @@ struct RenderObject {
     std::string materialName;
 };
 
+struct Texture {
+    AllocatedImage image;
+    VkImageView imageView;
+};
+
 struct GPUCameraData{
 	glm::mat4 view;
 	glm::mat4 proj;
 	glm::mat4 viewproj;
+    glm::vec3 cameraPosition;
 };
 
 struct GPUSceneData {
     glm::vec4 ambientColor;
 	glm::vec4 sunlightDirection; //w for sun power
 	glm::vec4 sunlightColor;
+    float terrainSubdivision;
 };
 
 struct GPUObjectData {
@@ -107,6 +125,7 @@ public:
 	VkPipelineMultisampleStateCreateInfo m_multisampling;
 	VkPipelineLayout m_pipelineLayout;
     VkPipelineDepthStencilStateCreateInfo m_depthStencil;
+    VkPipelineTessellationStateCreateInfo m_tessellationState;
 
     VkPipeline BuildPipeline(VkDevice p_device, VkRenderPass p_pass);
 };
@@ -118,6 +137,10 @@ struct UploadContext {
 };
 
 class VulkanEngine {
+public:
+    VmaAllocator m_allocator;
+    DeletionQueue m_mainDeletionQueue;
+    VkDescriptorSetLayout m_singleTextureSetLayout;
 private:
     bool m_initialized = false;
     int m_frameNumber = 0;
@@ -126,7 +149,6 @@ private:
 
     // --- CORE OBJECTS ---
     GLFWwindow* m_window = nullptr;
-    DeletionQueue m_mainDeletionQueue;
     VkInstance m_instance;
     VkDebugUtilsMessengerEXT m_debugMessenger;
     VkPhysicalDevice m_physicalDevice;
@@ -135,7 +157,6 @@ private:
     VkSurfaceKHR m_surface;
     VkQueue m_graphicsQueue;
     uint32_t m_graphicsQueueFamily;
-    VmaAllocator m_allocator;
 
     ImGui_ImplVulkanH_Window m_imguiVulkanWindow;
 
@@ -161,20 +182,31 @@ private:
     VkDescriptorPool m_descriptorPool;
     VkDescriptorSetLayout m_globalSetLayout;
     VkDescriptorSetLayout m_objectSetLayout;
+    VkDescriptorSetLayout m_heightmapSetLayout;
 
     // --- SCENE STUFF ---
-    std::vector<RenderObject> m_renderables;
+    std::unordered_map<std::string, Texture> m_loadedTextures;
     std::unordered_map<std::string, Material> m_materials;
     std::unordered_map<std::string, Mesh> m_mesh;
+    Camera m_camera{};
+
+    std::vector<RenderObject> m_renderables;
+
+    Mesh m_terrainMesh;
+    Material m_terrainMaterial;
+    VkPipeline m_terrainPipeline;
+    VkPipeline m_terrainWiredPipeline;
+    RenderObject m_terrain;
+    bool m_drawTerrainWire = false;
 
     UploadContext m_uploadContext;
 
     GPUSceneData m_sceneParameters;
     AllocatedBuffer m_sceneParameterBuffer;
-
 private:
     bool* m_showDemoWindow;
     bool* m_showInspectorWindow;
+    bool* m_showHeightMapWindow;
 public:
     // VulkanEngine() = default;
 
@@ -183,18 +215,21 @@ public:
     void Run();
     void Cleanup();
 
-private:
+
     AllocatedBuffer CreateBuffer(size_t p_allocSize, VkBufferUsageFlags p_usage, VmaMemoryUsage p_memoryUsage);
-    size_t PadUniformBufferSize(size_t p_originalSize) const;
+    void ImmediateSubmit(std::function<void(VkCommandBuffer p_cmd)>&& function);
+
+    void OnKeyPressed(int p_key, int p_scancode, int p_action, int p_mods);
+private:
+    [[nodiscard]] size_t PadUniformBufferSize(size_t p_originalSize) const;
 
     Mesh* GetMesh(const std::string &p_name);
     Material* GetMaterial(const std::string &p_name);
     Material* CreateMaterial(VkPipeline p_pipeline, VkPipelineLayout p_layout, const std::string &p_name);
 
+    void LoadImages();
     void LoadMeshes();
     void UploadMesh(Mesh& p_mesh);
-
-    void ImmediateSubmit(std::function<void(VkCommandBuffer p_cmd)>&& function);
 
     void InitScene();
 
@@ -218,6 +253,8 @@ private:
     void DrawUI();
     void Draw();
     void DrawObjects(VkCommandBuffer p_cmd, RenderObject* p_first, uint32_t count);
+    void DrawRenderObject(VkCommandBuffer p_cmd, RenderObject& p_object, Mesh* p_lastMesh, Material* p_lastMaterial, uint32_t p_index);
+    void ProcessInputs(float p_deltaTime);
 
     static void FramebufferSizeCallback(GLFWwindow* p_window, int p_width, int p_height);
 };

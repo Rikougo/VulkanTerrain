@@ -37,9 +37,16 @@ VertexInputDescription Vertex::GetVertexDescription() {
     colorAttribute.format = VK_FORMAT_R32G32B32_SFLOAT;
     colorAttribute.offset = offsetof(Vertex, color);
 
+    VkVertexInputAttributeDescription uvAttribute = {};
+	uvAttribute.binding = 0;
+	uvAttribute.location = 3;
+	uvAttribute.format = VK_FORMAT_R32G32_SFLOAT;
+	uvAttribute.offset = offsetof(Vertex, uv);
+
     description.attributes.push_back(positionAttribute);
     description.attributes.push_back(normalAttribute);
     description.attributes.push_back(colorAttribute);
+	description.attributes.push_back(uvAttribute);
     return description;
 }
 
@@ -110,6 +117,12 @@ bool Mesh::LoadFromObj(const std::filesystem::path &p_path) {
                 //we are setting the vertex color as the vertex normal. This is just for display purposes
                 new_vert.color = new_vert.normal;
 
+                tinyobj::real_t ux = l_attribute.texcoords[2 * idx.texcoord_index + 0];
+			    tinyobj::real_t uy = l_attribute.texcoords[2 * idx.texcoord_index + 1];
+
+                new_vert.uv.x = ux;
+                new_vert.uv.y = 1-uy;
+
 
                 m_vertices.push_back(new_vert);
             }
@@ -118,4 +131,38 @@ bool Mesh::LoadFromObj(const std::filesystem::path &p_path) {
     }
 
     return true;
+}
+
+Mesh VulkanUtil::CreateQuad(float p_size /*= 1*/, uint8_t p_resolution /*= 1*/) {
+    Mesh l_result{};
+
+    if (p_resolution <= 1) {
+        l_result.m_vertices = {
+                {{-p_size, 0.0f, -p_size}, {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 0.0f}},
+                {{ p_size, 0.0f, -p_size}, {0.0f, 1.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f}},
+                {{-p_size, 0.0f,  p_size}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f, 1.0f}, {0.0f, 1.0f}},
+                {{ p_size, 0.0f,  p_size}, {0.0f, 1.0f, 0.0f}, {1.0f, 1.0f, 1.0f}, {1.0f, 1.0f}}
+        };
+    }
+
+    for(unsigned i = 0; i <= p_resolution - 1; i++)
+    {
+        for(unsigned j = 0; j <= p_resolution - 1; j++)
+        {
+            l_result.m_vertices.push_back(Vertex{
+                {-p_size/2.0f + p_size* i / (float)p_resolution, 0.0f, -p_size/2.0f + p_size* j / (float)p_resolution},
+                {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, {i / (float)p_resolution, j / (float)p_resolution}});
+            l_result.m_vertices.push_back(Vertex{
+                {-p_size/2.0f + p_size* (i+1) / (float)p_resolution, 0.0f, -p_size/2.0f + p_size* j / (float)p_resolution},
+                {0.0f, 1.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {(i+1) / (float)p_resolution, j / (float)p_resolution}});
+            l_result.m_vertices.push_back(Vertex{
+                {-p_size/2.0f + p_size* i / (float)p_resolution, 0.0f, -p_size/2.0f + p_size* (j+1) / (float)p_resolution},
+                {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f, 1.0f}, {i / (float)p_resolution, (j+1) / (float)p_resolution}});
+            l_result.m_vertices.push_back(Vertex{
+                {-p_size/2.0f + p_size* (i+1) / (float)p_resolution, 0.0f, -p_size/2.0f + p_size* (j+1) / (float)p_resolution},
+                {0.0f, 1.0f, 0.0f}, {1.0f, 1.0f, 1.0f}, {(i+1) / (float)p_resolution, (j+1) / (float)p_resolution}});
+        }
+    }
+
+    return l_result;
 }

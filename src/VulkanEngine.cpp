@@ -23,7 +23,8 @@
 
 void VulkanEngine::Init() {
     m_showDemoWindow = new bool(false);
-    m_showInspectorWindow = new bool(false);
+    m_showInspectorWindow = new bool(true);
+    m_showHeightMapWindow = new bool(false);
 
     glfwInit();
 
@@ -34,7 +35,13 @@ void VulkanEngine::Init() {
             static_cast<int>(m_windowExtent.height),
             "Vulkan", nullptr, nullptr);
     glfwSetWindowUserPointer(m_window, this);
+
     glfwSetFramebufferSizeCallback(m_window, FramebufferSizeCallback);
+
+    glfwSetKeyCallback(m_window, [](GLFWwindow* p_window, int p_key, int p_scancode, int p_action, int p_mods) {
+        auto* engine = reinterpret_cast<VulkanEngine*>(glfwGetWindowUserPointer(p_window));
+        engine->OnKeyPressed(p_key, p_scancode, p_action, p_mods);
+    });
 
     InitVulkan();
     InitSwapchain();
@@ -46,6 +53,7 @@ void VulkanEngine::Init() {
     InitPipelines();
     InitIMGUI();
 
+    LoadImages();
     LoadMeshes();
 
     InitScene();
@@ -54,10 +62,16 @@ void VulkanEngine::Init() {
 }
 
 void VulkanEngine::Run() {
-    static bool l_showDemoWindow = true;
+    auto l_now = std::chrono::high_resolution_clock::now();
 
     while (!glfwWindowShouldClose(m_window)) {
+        auto l_then = std::chrono::high_resolution_clock::now();
+        float l_deltaTime = std::chrono::duration<float, std::chrono::seconds::period>(l_then - l_now).count();
+        l_now = l_then;
+
         glfwPollEvents();
+
+        ProcessInputs(l_deltaTime);
 
         DrawUI();
         Draw();
@@ -146,6 +160,30 @@ Mesh* VulkanEngine::GetMesh(const std::string& p_name) {
     }
 }
 
+void VulkanEngine::LoadImages() {
+    Texture l_june{}, l_heightmap{};
+
+	VulkanUtil::LoadImageFromFile(*this, "assets/june.png", l_june.image);
+
+	VkImageViewCreateInfo l_imageInfo = VulkanInit::ImageViewCreateInfo(VK_FORMAT_R8G8B8A8_SRGB,
+                                                                      l_june.image.m_image, VK_IMAGE_ASPECT_COLOR_BIT);
+	vkCreateImageView(m_device, &l_imageInfo, nullptr, &l_june.imageView);
+
+	m_loadedTextures["june"] = l_june;
+
+    VulkanUtil::LoadImageFromFile(*this, "assets/heightmap.jpg", l_heightmap.image);
+
+	VkImageViewCreateInfo l_heightmapInfo = VulkanInit::ImageViewCreateInfo(VK_FORMAT_R8G8B8A8_SRGB,
+                                                                      l_heightmap.image.m_image, VK_IMAGE_ASPECT_COLOR_BIT);
+	vkCreateImageView(m_device, &l_heightmapInfo, nullptr, &l_heightmap.imageView);
+
+    m_loadedTextures["heightmap"] = l_heightmap;
+
+    m_mainDeletionQueue.PushFunction([=]() {
+        vkDestroyImageView(m_device, l_june.imageView, nullptr);
+    });
+}
+
 void VulkanEngine::LoadMeshes() {
     const std::filesystem::path l_meshPath = std::filesystem::current_path() / "assets" / "mesh";
 
@@ -164,6 +202,8 @@ void VulkanEngine::LoadMeshes() {
         }
     }
 
+    m_terrainMesh = VulkanUtil::CreateQuad(10.0f, 8);
+    UploadMesh(m_terrainMesh);
 }
 
 void VulkanEngine::UploadMesh(Mesh &p_mesh) {
@@ -257,36 +297,74 @@ void VulkanEngine::ImmediateSubmit(std::function<void(VkCommandBuffer p_cmd)>&& 
 }
 
 void VulkanEngine::InitScene() {
-    if (m_mesh.size() == 0) {
+    if (m_mesh.empty()) {
         std::cerr << "No meshes loaded, scene is empty" << std::endl;
         return;
     }
 
+    //create a sampler for the texture
+	VkSamplerCreateInfo samplerInfo = VulkanInit::SamplerCreateInfo(VK_FILTER_NEAREST);
+
+	VkSampler juneSampler, heightMapSampler;
+	vkCreateSampler(m_device, &samplerInfo, nullptr, &juneSampler);
+    vkCreateSampler(m_device, &samplerInfo, nullptr, &heightMapSampler);
+
+	Material* texturedMat =	GetMaterial("textured");
+
+	//allocate the descriptor set for single-texture to use on the material
+	VkDescriptorSetAllocateInfo l_texAllocInfo = {};
+	l_texAllocInfo.pNext = nullptr;
+	l_texAllocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+	l_texAllocInfo.descriptorPool = m_descriptorPool;
+	l_texAllocInfo.descriptorSetCount = 1;
+	l_texAllocInfo.pSetLayouts = &m_singleTextureSetLayout;
+
+    VkDescriptorSetAllocateInfo l_heightmapAllocInfo = {};
+	l_heightmapAllocInfo.pNext = nullptr;
+	l_heightmapAllocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+	l_heightmapAllocInfo.descriptorPool = m_descriptorPool;
+	l_heightmapAllocInfo.descriptorSetCount = 1;
+	l_heightmapAllocInfo.pSetLayouts = &m_heightmapSetLayout;
+
+	vkAllocateDescriptorSets(m_device, &l_texAllocInfo, &texturedMat->textureSet);
+    vkAllocateDescriptorSets(m_device, &l_heightmapAllocInfo, &m_terrainMaterial.heightmapSet);
+
+    m_mainDeletionQueue.PushFunction([=]() {
+        vkDestroySampler(m_device, juneSampler, nullptr);
+        vkDestroySampler(m_device, heightMapSampler, nullptr);
+    });
+
+	//write to the descriptor set so that it points to our empire_diffuse texture
+	VkDescriptorImageInfo imageBufferInfo{};
+	imageBufferInfo.sampler = juneSampler;
+	imageBufferInfo.imageView = m_loadedTextures["june"].imageView;
+	imageBufferInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	VkWriteDescriptorSet texture1 = VulkanInit::WriteDescriptorImage(
+            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, texturedMat->textureSet,
+            &imageBufferInfo, 0);
+	vkUpdateDescriptorSets(m_device, 1, &texture1, 0, nullptr);
+
+    VkDescriptorImageInfo heightMapBufferInfo{};
+    heightMapBufferInfo.sampler = heightMapSampler;
+	heightMapBufferInfo.imageView = m_loadedTextures["heightmap"].imageView;
+	heightMapBufferInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    VkWriteDescriptorSet heightmap1 = VulkanInit::WriteDescriptorImage(
+            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, m_terrainMaterial.heightmapSet,
+            &heightMapBufferInfo, 0);
+    vkUpdateDescriptorSets(m_device, 1, &heightmap1, 0, nullptr);
+
+    m_camera.position = glm::vec3{0.0f,0.0f,-10.0f};
+    m_camera.forward = glm::vec3{0.0f,0.0f,1.0f};
+    m_camera.right = glm::cross(m_camera.forward, glm::vec3{0.0f,1.0f,0.0f});
+
+    m_sceneParameters.sunlightDirection = glm::vec4{1.0f, 0.0f, 0.0f, 0.0f};
+    m_sceneParameters.sunlightColor = glm::vec4{1.0f, 1.0f, 1.0f, 1.0f};
+
     std::string l_defaultMesh = m_mesh.begin()->first;
 
-    RenderObject monkey{};
-	monkey.mesh = GetMesh(l_defaultMesh);
-    monkey.meshName = l_defaultMesh;
-	monkey.material = GetMaterial("wiremesh");
-    monkey.materialName = "wiremesh";
-	monkey.transformMatrix = glm::mat4{ 1.0f };
-
-	m_renderables.push_back(monkey);
-
-	for (int x = -20; x <= 20; x++) {
-		for (int y = -20; y <= 20; y++) {
-
-			RenderObject l_smallMonkey{};
-            l_smallMonkey.meshName = l_defaultMesh;
-            l_smallMonkey.mesh = GetMesh(l_defaultMesh);
-            l_smallMonkey.material = GetMaterial("wiremesh");
-            l_smallMonkey.materialName = "wiremesh";
-			l_smallMonkey.position = glm::vec3(x, 0, y);
-            l_smallMonkey.scale = glm::vec3(0.2, 0.2, 0.2);
-
-			m_renderables.push_back(l_smallMonkey);
-		}
-	}
+    m_terrain.mesh = &m_terrainMesh;
+    m_terrain.material = &m_terrainMaterial;
 }
 
 void VulkanEngine::InitVulkan() {
@@ -313,8 +391,17 @@ void VulkanEngine::InitVulkan() {
 	vkb::PhysicalDevice l_physicalDevice = l_selector
 		.set_minimum_version(1, 2)
 		.set_surface(m_surface)
+        .set_required_features({.tessellationShader = true, .fillModeNonSolid = true})
 		.select()
 		.value();
+
+    if (l_physicalDevice.features.tessellationShader == VK_FALSE) {
+        throw std::runtime_error("GPU does not support tessellation shaders");
+    }
+
+    if (l_physicalDevice.features.fillModeNonSolid == VK_FALSE) {
+        throw std::runtime_error("GPU does not support tessellation shaders");
+    }
 
 	//create the final Vulkan device
 	vkb::DeviceBuilder l_deviceBuilder{l_physicalDevice };
@@ -620,7 +707,9 @@ void VulkanEngine::InitDescriptors() {
 	{
 		{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 10 },
         { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 10 },
-        { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 10 }
+        { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 10 },
+        { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 10 },
+        { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 10 },
 	};
 
 	VkDescriptorPoolCreateInfo pool_info = {};
@@ -634,11 +723,11 @@ void VulkanEngine::InitDescriptors() {
 
     VkDescriptorSetLayoutBinding l_cameraBufferBinding = VulkanInit::DescriptorSetLayoutBinding(
             VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-            VK_SHADER_STAGE_VERTEX_BIT,0);
+            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT,0);
 
     VkDescriptorSetLayoutBinding l_sceneBufferBinding = VulkanInit::DescriptorSetLayoutBinding(
             VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
-            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 1);
+            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, 1);
 
     VkDescriptorSetLayoutBinding l_bindings[] = { l_cameraBufferBinding, l_sceneBufferBinding };
 
@@ -664,6 +753,32 @@ void VulkanEngine::InitDescriptors() {
 	set2info.pBindings = &objectBind;
 
 	vkCreateDescriptorSetLayout(m_device, &set2info, nullptr, &m_objectSetLayout);
+
+    VkDescriptorSetLayoutBinding textureBind = VulkanInit::DescriptorSetLayoutBinding(
+            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            VK_SHADER_STAGE_FRAGMENT_BIT, 0);
+
+	VkDescriptorSetLayoutCreateInfo set3info = {};
+	set3info.bindingCount = 1;
+	set3info.flags = 0;
+	set3info.pNext = nullptr;
+	set3info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+	set3info.pBindings = &textureBind;
+
+	vkCreateDescriptorSetLayout(m_device, &set3info, nullptr, &m_singleTextureSetLayout);
+
+    VkDescriptorSetLayoutBinding l_heightmapBind = VulkanInit::DescriptorSetLayoutBinding(
+            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT, 0);
+
+	VkDescriptorSetLayoutCreateInfo set4info = {};
+	set4info.bindingCount = 1;
+	set4info.flags = 0;
+	set4info.pNext = nullptr;
+	set4info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+	set4info.pBindings = &l_heightmapBind;
+
+	vkCreateDescriptorSetLayout(m_device, &set4info, nullptr, &m_heightmapSetLayout);
 
     for (int i = 0; i < FRAME_AMOUNT; i++)
 	{
@@ -732,6 +847,8 @@ void VulkanEngine::InitDescriptors() {
     m_mainDeletionQueue.PushFunction([=]() {
 		vkDestroyDescriptorSetLayout(m_device, m_globalSetLayout, nullptr);
         vkDestroyDescriptorSetLayout(m_device, m_objectSetLayout, nullptr);
+        vkDestroyDescriptorSetLayout(m_device, m_singleTextureSetLayout, nullptr);
+        vkDestroyDescriptorSetLayout(m_device, m_heightmapSetLayout, nullptr);
 		vkDestroyDescriptorPool(m_device, m_descriptorPool, nullptr);
 
         vmaDestroyBuffer(m_allocator, m_sceneParameterBuffer.m_buffer, m_sceneParameterBuffer.m_allocation);
@@ -739,14 +856,21 @@ void VulkanEngine::InitDescriptors() {
 }
 
 void VulkanEngine::InitPipelines() {
-    VkShaderModule l_mainFragShader, l_meshVertShader;
-	if (!LoadShaderModule("./shaders/bin/main_frag.spv", &l_mainFragShader))
+    VkShaderModule l_litFragShader, l_litTexFragShader, l_meshVertShader;
+	if (!LoadShaderModule("./shaders/bin/lit_main.spv", &l_litFragShader))
 		throw std::runtime_error("Error when building the main fragment shader module");
-	else std::cout << "Main fragment shader successfully loaded" << std::endl;
+	else
+        std::cout << "Main fragment shader successfully loaded" << std::endl;
 
-	if (!LoadShaderModule("./shaders/bin/mesh_vert.spv", &l_meshVertShader))
+    if (!LoadShaderModule("./shaders/bin/lit_texture.spv", &l_litTexFragShader))
+		throw std::runtime_error("Error when building the texture fragment shader module");
+	else
+        std::cout << "Texture fragment shader successfully loaded" << std::endl;
+
+	if (!LoadShaderModule("./shaders/bin/mesh.spv", &l_meshVertShader))
 		throw std::runtime_error("Error when building the mesh vertex shader module");
-	else std::cout << "Red Triangle vertex shader successfully loaded" << std::endl;
+	else
+        std::cout << "Mesh vertex shader successfully loaded" << std::endl;
 
     VkPipelineLayoutCreateInfo l_meshPipelineLayoutInfo = VulkanInit::PipelineLayoutCreateInfo();
     l_meshPipelineLayoutInfo.pushConstantRangeCount = 0;
@@ -758,11 +882,25 @@ void VulkanEngine::InitPipelines() {
     VkPipelineLayout l_meshPipelineLayout;
     VK_CHECK(vkCreatePipelineLayout(m_device, &l_meshPipelineLayoutInfo, nullptr, &l_meshPipelineLayout));
 
+    //create pipeline layout for the textured mesh, which has 3 descriptor sets
+	//we start from  the normal mesh layout
+	VkPipelineLayoutCreateInfo l_texturePipelineLayoutInfo = l_meshPipelineLayoutInfo;
+
+	VkDescriptorSetLayout l_texturedSetLayouts[] = {
+            m_globalSetLayout, m_objectSetLayout, m_singleTextureSetLayout
+    };
+
+	l_texturePipelineLayoutInfo.setLayoutCount = 3;
+	l_texturePipelineLayoutInfo.pSetLayouts = l_texturedSetLayouts;
+
+	VkPipelineLayout l_texturedPipeLayout;
+	VK_CHECK(vkCreatePipelineLayout(m_device, &l_texturePipelineLayoutInfo, nullptr, &l_texturedPipeLayout));
+
     //build the stage-create-info for both vertex and fragment stages. This lets the pipeline know the shader modules per stage
 	PipelineBuilder pipelineBuilder;
 
 	pipelineBuilder.m_shaderStages.push_back(VulkanInit::PipelineShaderStageCreateInfo(
-            VK_SHADER_STAGE_FRAGMENT_BIT, l_mainFragShader));
+            VK_SHADER_STAGE_FRAGMENT_BIT, l_litFragShader));
 
 	//vertex input controls how to read vertices from vertex buffers. We aren't using it yet
 	pipelineBuilder.m_vertexInputInfo = VulkanInit::VertexInputStateCreateInfo();
@@ -807,27 +945,113 @@ void VulkanEngine::InitPipelines() {
 	pipelineBuilder.m_shaderStages.push_back(
             VulkanInit::PipelineShaderStageCreateInfo(VK_SHADER_STAGE_VERTEX_BIT, l_meshVertShader));
 
-	//make sure that l_mainFragShader is holding the compiled colored_triangle.frag
+	//make sure that l_litFragShader is holding the compiled colored_triangle.frag
 	pipelineBuilder.m_shaderStages.push_back(
-            VulkanInit::PipelineShaderStageCreateInfo(VK_SHADER_STAGE_FRAGMENT_BIT, l_mainFragShader));
+            VulkanInit::PipelineShaderStageCreateInfo(VK_SHADER_STAGE_FRAGMENT_BIT, l_litFragShader));
     pipelineBuilder.m_pipelineLayout = l_meshPipelineLayout;
 
-	//build the mesh triangle pipeline
+    // --- DEFAULT PIPELINE ---
 	VkPipeline l_meshPipeline = pipelineBuilder.BuildPipeline(m_device, m_renderPass);
 
     CreateMaterial(l_meshPipeline, l_meshPipelineLayout, "defaultmesh");
 
+    // --- WIREFRAME PIPELINE ---
     pipelineBuilder.m_rasterizer.polygonMode = VK_POLYGON_MODE_LINE;
     VkPipeline l_meshWirePipeline = pipelineBuilder.BuildPipeline(m_device, m_renderPass);
     CreateMaterial(l_meshWirePipeline, l_meshPipelineLayout, "wiremesh");
 
+    // --- TEXTURE PIPELINE ---
+    pipelineBuilder.m_rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+	pipelineBuilder.m_shaderStages.clear();
+	pipelineBuilder.m_shaderStages.push_back(
+		VulkanInit::PipelineShaderStageCreateInfo(VK_SHADER_STAGE_VERTEX_BIT, l_meshVertShader));
+
+	pipelineBuilder.m_shaderStages.push_back(
+		VulkanInit::PipelineShaderStageCreateInfo(VK_SHADER_STAGE_FRAGMENT_BIT, l_litTexFragShader));
+
+	pipelineBuilder.m_pipelineLayout = l_texturedPipeLayout;
+	VkPipeline texPipeline = pipelineBuilder.BuildPipeline(m_device, m_renderPass);
+	CreateMaterial(texPipeline, l_texturedPipeLayout, "textured");
+
+    // --- TERRAIN PIPELINE ---
+    VkPipelineLayoutCreateInfo l_terrainPipelineLayoutInfo = VulkanInit::PipelineLayoutCreateInfo();
+    l_terrainPipelineLayoutInfo.pushConstantRangeCount = 0;
+    VkDescriptorSetLayout l_terrainSetLayouts[] = {
+            m_globalSetLayout, m_objectSetLayout, m_heightmapSetLayout
+    };
+
+	l_terrainPipelineLayoutInfo.setLayoutCount = 3;
+	l_terrainPipelineLayoutInfo.pSetLayouts = l_terrainSetLayouts;
+
+	VkPipelineLayout l_terrainPipelineLayout;
+	VK_CHECK(vkCreatePipelineLayout(m_device, &l_terrainPipelineLayoutInfo, nullptr, &l_terrainPipelineLayout));
+
+    VkShaderModule l_terrainVert, l_terrainTessControlShader, l_terrainTessEvalShader, l_terrainFrag;
+    if (!LoadShaderModule("./shaders/bin/terrain_vert.spv", &l_terrainVert))
+        throw std::runtime_error("Error when building the terrain vertex shader module");
+    else
+        std::cout << "Vertex shader successfully loaded" << std::endl;
+
+    if (!LoadShaderModule("./shaders/bin/terrain_tess_control.spv", &l_terrainTessControlShader))
+        throw std::runtime_error("Error when building the terrain tessellation control shader module");
+    else
+        std::cout << "Terrain tessellation control shader successfully loaded" << std::endl;
+
+    if (!LoadShaderModule("./shaders/bin/terrain_tess_eval.spv", &l_terrainTessEvalShader))
+        throw std::runtime_error("Error when building the terrain tessellation evaluation shader module");
+    else
+        std::cout << "Terrain tessellation evaluation shader successfully loaded" << std::endl;
+
+    if (!LoadShaderModule("./shaders/bin/terrain_frag.spv", &l_terrainFrag))
+        throw std::runtime_error("Error when building the terrain fragment shader module");
+    else
+        std::cout << "Fragment shader successfully loaded" << std::endl;
+
+    pipelineBuilder.m_pipelineLayout = l_terrainPipelineLayout;
+    pipelineBuilder.m_inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_PATCH_LIST;
+    pipelineBuilder.m_tessellationState = VulkanInit::TessellationStateCreateInfo(4);
+
+    pipelineBuilder.m_shaderStages.clear();
+    pipelineBuilder.m_shaderStages.push_back(
+		VulkanInit::PipelineShaderStageCreateInfo(VK_SHADER_STAGE_VERTEX_BIT, l_terrainVert));
+
+	pipelineBuilder.m_shaderStages.push_back(
+		VulkanInit::PipelineShaderStageCreateInfo(VK_SHADER_STAGE_FRAGMENT_BIT, l_terrainFrag));
+
+    pipelineBuilder.m_shaderStages.push_back(
+		VulkanInit::PipelineShaderStageCreateInfo(VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, l_terrainTessControlShader));
+
+    pipelineBuilder.m_shaderStages.push_back(
+		VulkanInit::PipelineShaderStageCreateInfo(VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT, l_terrainTessEvalShader));
+
+    pipelineBuilder.m_rasterizer.polygonMode = VK_POLYGON_MODE_LINE;
+    m_terrainWiredPipeline = pipelineBuilder.BuildPipeline(m_device, m_renderPass);
+    pipelineBuilder.m_rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+    m_terrainPipeline = pipelineBuilder.BuildPipeline(m_device, m_renderPass);
+
+	m_terrainMaterial.pipeline = m_drawTerrainWire ? m_terrainWiredPipeline : m_terrainPipeline;
+    m_terrainMaterial.pipelineLayout = l_terrainPipelineLayout;
+
+
     m_mainDeletionQueue.PushFunction([=]() {
-        vkDestroyShaderModule(m_device, l_mainFragShader, nullptr);
+        vkDestroyShaderModule(m_device, l_litTexFragShader, nullptr);
+        vkDestroyShaderModule(m_device, l_litFragShader, nullptr);
         vkDestroyShaderModule(m_device, l_meshVertShader, nullptr);
 
+        vkDestroyShaderModule(m_device, l_terrainVert, nullptr);
+        vkDestroyShaderModule(m_device, l_terrainTessControlShader, nullptr);
+        vkDestroyShaderModule(m_device, l_terrainTessEvalShader, nullptr);
+        vkDestroyShaderModule(m_device, l_terrainFrag, nullptr);
+
+        vkDestroyPipeline(m_device, m_terrainPipeline, nullptr);
+        vkDestroyPipeline(m_device, m_terrainWiredPipeline, nullptr);
+
+        vkDestroyPipeline(m_device, texPipeline, nullptr);
         vkDestroyPipeline(m_device, l_meshPipeline, nullptr);
         vkDestroyPipeline(m_device, l_meshWirePipeline, nullptr);
+
 		vkDestroyPipelineLayout(m_device, l_meshPipelineLayout, nullptr);
+        vkDestroyPipelineLayout(m_device, l_texturedPipeLayout, nullptr);
     });
 }
 
@@ -883,21 +1107,6 @@ void VulkanEngine::InitIMGUI() {
 
     m_imguiVulkanWindow.Surface = m_surface;
 
-    /*const VkFormat requestSurfaceImageFormat[] = { VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_B8G8R8_UNORM, VK_FORMAT_R8G8B8_UNORM };
-    const VkColorSpaceKHR requestSurfaceColorSpace = VK_COLORSPACE_SRGB_NONLINEAR_KHR;
-    m_imguiVulkanWindow.SurfaceFormat = ImGui_ImplVulkanH_SelectSurfaceFormat(
-            m_physicalDevice, m_imguiVulkanWindow.Surface, requestSurfaceImageFormat,
-            (size_t)IM_ARRAYSIZE(requestSurfaceImageFormat), requestSurfaceColorSpace);
-
-    VkPresentModeKHR present_modes[] = { VK_PRESENT_MODE_FIFO_KHR };
-    m_imguiVulkanWindow.PresentMode = ImGui_ImplVulkanH_SelectPresentMode(
-            m_physicalDevice, m_imguiVulkanWindow.Surface,
-            &present_modes[0], IM_ARRAYSIZE(present_modes));
-
-    ImGui_ImplVulkanH_CreateOrResizeWindow(m_instance, m_physicalDevice, m_device, &m_imguiVulkanWindow,
-                                           m_graphicsQueueFamily, nullptr, m_windowExtent.width, m_windowExtent.height,
-                                           3);*/
-
 	//execute a gpu command to upload imgui font textures
 	ImmediateSubmit([&](VkCommandBuffer cmd) {
         ImGui_ImplVulkan_CreateFontsTexture(cmd);
@@ -947,17 +1156,25 @@ void VulkanEngine::DrawUI() {
     ImGui::NewFrame();
 
     ImGui::BeginMainMenuBar();
-    if (ImGui::MenuItem("DemoWindow")) *m_showDemoWindow = !*m_showDemoWindow;
-    if (ImGui::MenuItem("InspectorWindow")) *m_showInspectorWindow = !*m_showInspectorWindow;
+    if (ImGui::MenuItem("DemoWindow", "CTRL + D", *m_showDemoWindow, true)) *m_showDemoWindow = !*m_showDemoWindow;
+    if (ImGui::MenuItem("InspectorWindow", "CTRL + I", *m_showInspectorWindow, true)) *m_showInspectorWindow = !*m_showInspectorWindow;
+    if (ImGui::MenuItem("HeightMapWindow", "CTRL + H", false, false)) *m_showHeightMapWindow = !*m_showHeightMapWindow;
     ImGui::EndMainMenuBar();
 
     if (*m_showDemoWindow) ImGui::ShowDemoWindow(m_showDemoWindow);
 
     if (*m_showInspectorWindow) {
         if (ImGui::Begin("Inspector", m_showInspectorWindow)) {
+            ImGui::BeginGroup();
+            ImGui::Text("Scene");
+            ImGui::SliderFloat3("LightDirection", &m_sceneParameters.sunlightDirection.x, -1.0f, 1.0f);
+            ImGui::ColorEdit3("LightColor", &m_sceneParameters.sunlightColor.x);
+            ImGui::SliderFloat("Terrain subdivision", &m_sceneParameters.terrainSubdivision, 1.0f, 64.0f, "%.0f");
+            ImGui::EndGroup();
+            constexpr ImGuiTreeNodeFlags BASE_NODE_FLAGS = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_OpenOnDoubleClick;
+
             uint32_t l_id{0};
             for(auto &l_renderObject : m_renderables) {
-                constexpr ImGuiTreeNodeFlags BASE_NODE_FLAGS = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_OpenOnDoubleClick;
 
                 bool node_open = ImGui::TreeNodeEx(std::to_string(l_id).c_str(), BASE_NODE_FLAGS, "%s(%d)",
                                                l_renderObject.meshName.c_str(), l_id);
@@ -1040,8 +1257,7 @@ void VulkanEngine::Draw() {
 
     //make a clear-color from frame number. This will flash with a 120*pi frame period.
 	VkClearValue clearValue;
-	float flash = abs(sin(m_frameNumber / 120.f));
-	clearValue.color = { { 0.0f, 0.0f, flash, 1.0f } };
+	clearValue.color = { { 0.0f, 0.0f, 0.0f, 1.0f } };
 
 	//clear depth at 1
 	VkClearValue depthClear;
@@ -1129,13 +1345,10 @@ void VulkanEngine::Draw() {
 }
 
 void VulkanEngine::DrawObjects(VkCommandBuffer p_cmd, RenderObject* p_first, uint32_t p_count) {
-   //camera view
-	glm::vec3 camPos = { 0.f,-6.f,-10.f };
-
-	glm::mat4 view = glm::translate(glm::mat4(1.f), camPos);
+    glm::mat4 view = glm::lookAt(m_camera.position, m_camera.position + m_camera.forward, glm::vec3{0.0f, 1.0f, 0.0f});
 	//camera projection
 	glm::mat4 projection = glm::perspective(
-            glm::radians(70.f),
+            glm::radians(90.f),
             static_cast<float>(m_windowExtent.width) / static_cast<float>(m_windowExtent.height),
             0.1f, 200.0f);
 	projection[1][1] *= -1;
@@ -1145,6 +1358,7 @@ void VulkanEngine::DrawObjects(VkCommandBuffer p_cmd, RenderObject* p_first, uin
 	camData.proj = projection;
 	camData.view = view;
 	camData.viewproj = projection * view;
+    camData.cameraPosition = m_camera.position;
 
 	//and copy it to the buffer
 	void* data;
@@ -1169,14 +1383,19 @@ void VulkanEngine::DrawObjects(VkCommandBuffer p_cmd, RenderObject* p_first, uin
 
 	vmaUnmapMemory(m_allocator, m_sceneParameterBuffer.m_allocation);
 
+    // fill model matrix SSBO
     void* objectData;
     vmaMapMemory(m_allocator, GetCurrentFrame().objectBuffer.m_allocation, &objectData);
 
     auto* objectSSBO = (GPUObjectData*)objectData;
-
-    for (int i = 0; i < p_count; i++)
+    for (int i = 0; i < p_count+1; i++)
     {
-        RenderObject& object = p_first[i];
+        if (i == 0) {
+            objectSSBO[i].modelMatrix = glm::mat4{1.0f};
+            continue;
+        }
+
+        RenderObject& object = p_first[i-1];
         glm::mat4 l_transform{1.0f};
         l_transform = glm::translate(l_transform, object.position);
         l_transform = glm::scale(l_transform, object.scale);
@@ -1185,55 +1404,147 @@ void VulkanEngine::DrawObjects(VkCommandBuffer p_cmd, RenderObject* p_first, uin
 
     vmaUnmapMemory(m_allocator, GetCurrentFrame().objectBuffer.m_allocation);
 
+    // --- DRAW TERRAIN ---
 	Mesh* lastMesh = nullptr;
 	Material* lastMaterial = nullptr;
+    DrawRenderObject(p_cmd, m_terrain, lastMesh, lastMaterial, 0);
+
+    // --- DRAW OBJECTS ---
 	for (int i = 0; i < p_count; i++)
 	{
 		RenderObject& object = p_first[i];
 
-		//only bind the pipeline if it doesn't match with the already bound one
-		if (object.material != lastMaterial) {
-			vkCmdBindPipeline(p_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, object.material->pipeline);
-			lastMaterial = object.material;
-
-            VkViewport viewport{};
-            viewport.x = 0.0f;
-            viewport.y = 0.0f;
-            viewport.width = (float) m_windowExtent.width;
-            viewport.height = (float) m_windowExtent.height;
-            viewport.minDepth = 0.0f;
-            viewport.maxDepth = 1.0f;
-            vkCmdSetViewport(p_cmd, 0, 1, &viewport);
-
-            VkRect2D scissor{};
-            scissor.offset = {0, 0};
-            scissor.extent = m_windowExtent;
-            vkCmdSetScissor(p_cmd, 0, 1, &scissor);
-
-            uint32_t l_uniformOffset = PadUniformBufferSize(sizeof(GPUSceneData)) * frameIndex;
-            vkCmdBindDescriptorSets(
-                    p_cmd,
-                    VK_PIPELINE_BIND_POINT_GRAPHICS,
-                    object.material->pipelineLayout, 0, 1,
-                    &GetCurrentFrame().globalDescriptor, 1, &l_uniformOffset);
-
-            vkCmdBindDescriptorSets(
-                    p_cmd,
-                    VK_PIPELINE_BIND_POINT_GRAPHICS,
-                    object.material->pipelineLayout, 1, 1,
-                    &GetCurrentFrame().objectDescriptor, 0, nullptr);
-		}
-
-		//only bind the mesh if it's a different one from last bind
-		if (object.mesh != lastMesh) {
-			//bind the mesh vertex buffer with offset 0
-			VkDeviceSize offset = 0;
-			vkCmdBindVertexBuffers(p_cmd, 0, 1, &object.mesh->m_vertexBuffer.m_buffer, &offset);
-			lastMesh = object.mesh;
-		}
-		//we can now draw
-		vkCmdDraw(p_cmd, object.mesh->m_vertices.size(), 1, 0, i);
+        DrawRenderObject(p_cmd, object, lastMesh, lastMaterial, i+1);
 	}
+}
+
+void VulkanEngine::DrawRenderObject(VkCommandBuffer p_cmd, RenderObject& p_object, Mesh* p_lastMesh, Material* p_lastMaterial, uint32_t p_index) {
+    int l_frameIndex = m_frameNumber % FRAME_AMOUNT;
+
+    //only bind the pipeline if it doesn't match with the already bound one
+    if (p_object.material != p_lastMaterial) {
+        vkCmdBindPipeline(p_cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p_object.material->pipeline);
+        p_lastMaterial = p_object.material;
+
+        VkViewport viewport{};
+        viewport.x = 0.0f;
+        viewport.y = 0.0f;
+        viewport.width = (float) m_windowExtent.width;
+        viewport.height = (float) m_windowExtent.height;
+        viewport.minDepth = 0.0f;
+        viewport.maxDepth = 1.0f;
+        vkCmdSetViewport(p_cmd, 0, 1, &viewport);
+
+        VkRect2D scissor{};
+        scissor.offset = {0, 0};
+        scissor.extent = m_windowExtent;
+        vkCmdSetScissor(p_cmd, 0, 1, &scissor);
+
+        uint32_t l_uniformOffset = PadUniformBufferSize(sizeof(GPUSceneData)) * l_frameIndex;
+        vkCmdBindDescriptorSets(
+                p_cmd,
+                VK_PIPELINE_BIND_POINT_GRAPHICS,
+                p_object.material->pipelineLayout, 0, 1,
+                &GetCurrentFrame().globalDescriptor, 1, &l_uniformOffset);
+
+        vkCmdBindDescriptorSets(
+                p_cmd,
+                VK_PIPELINE_BIND_POINT_GRAPHICS,
+                p_object.material->pipelineLayout, 1, 1,
+                &GetCurrentFrame().objectDescriptor, 0, nullptr);
+
+        if (p_object.material->textureSet != VK_NULL_HANDLE) {
+            //texture descriptor
+            vkCmdBindDescriptorSets(p_cmd,
+                                    VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                    p_object.material->pipelineLayout, 2, 1,
+                                    &p_object.material->textureSet, 0, nullptr);
+        }
+
+        if (p_object.material->heightmapSet != VK_NULL_HANDLE) {
+            //texture descriptor
+            vkCmdBindDescriptorSets(p_cmd,
+                                    VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                    p_object.material->pipelineLayout, 2, 1,
+                                    &p_object.material->heightmapSet, 0, nullptr);
+        }
+    }
+
+    //only bind the mesh if it's a different one from last bind
+    if (p_object.mesh != p_lastMesh) {
+        //bind the mesh vertex buffer with offset 0
+        VkDeviceSize offset = 0;
+        vkCmdBindVertexBuffers(p_cmd, 0, 1, &p_object.mesh->m_vertexBuffer.m_buffer, &offset);
+        p_lastMesh = p_object.mesh;
+    }
+    //we can now draw
+    vkCmdDraw(p_cmd, p_object.mesh->m_vertices.size(), 1, 0, p_index);
+}
+
+void VulkanEngine::ProcessInputs(float p_deltaTime) {
+    static constexpr float DEAD_ZONE = 0.5f;
+    static glm::vec<2, double> s_mousePos = {0,0};
+    static bool s_firstFrame = true;
+
+    glm::vec<2, double> l_lastMousePos{0,0};
+    {
+        if (!s_firstFrame) {
+            l_lastMousePos = s_mousePos;
+            glfwGetCursorPos(m_window, &s_mousePos[0], &s_mousePos[1]);
+        } else {
+            s_firstFrame = false;
+            glfwGetCursorPos(m_window, &s_mousePos[0], &s_mousePos[1]);
+            l_lastMousePos = s_mousePos;
+        }
+    }
+
+    if (glfwGetMouseButton(m_window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS && glfwGetKey(m_window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS) {
+        bool l_cameraRotDirty = false;
+        if (abs(l_lastMousePos.x - s_mousePos.x) > DEAD_ZONE) {
+            auto l_newRotY = static_cast<float>(m_camera.rotation.y + (s_mousePos.x - l_lastMousePos.x));
+            m_camera.rotation.y = l_newRotY;
+            l_cameraRotDirty = true;
+        }
+
+        if (abs(l_lastMousePos.y - s_mousePos.y) > DEAD_ZONE) {
+            auto l_newRotX = static_cast<float>(m_camera.rotation.x + (l_lastMousePos.y - s_mousePos.y));
+            l_newRotX = glm::clamp(l_newRotX, -89.0f, 89.0f);
+            m_camera.rotation.x = l_newRotX;
+            l_cameraRotDirty = true;
+        }
+
+        if (l_cameraRotDirty) {
+            m_camera.forward = glm::normalize(glm::vec3{
+                    cos(glm::radians(m_camera.rotation.x)) * cos(glm::radians(m_camera.rotation.y)),
+                    sin(glm::radians(m_camera.rotation.x)),
+                    cos(glm::radians(m_camera.rotation.x)) * sin(glm::radians(m_camera.rotation.y))
+            });
+            m_camera.right = glm::normalize(glm::cross(m_camera.forward, {0.0f, 1.0f, 0.0f}));
+        }
+    }
+
+    if (glfwGetKey(m_window, GLFW_KEY_W) == GLFW_PRESS)
+        m_camera.position += m_camera.forward * (m_camera.speed * p_deltaTime);
+    if (glfwGetKey(m_window, GLFW_KEY_S) == GLFW_PRESS)
+        m_camera.position -= m_camera.forward * (m_camera.speed * p_deltaTime);
+    if (glfwGetKey(m_window, GLFW_KEY_A) == GLFW_PRESS)
+        m_camera.position -= m_camera.right * (m_camera.speed * p_deltaTime);
+    if (glfwGetKey(m_window, GLFW_KEY_D) == GLFW_PRESS)
+        m_camera.position += m_camera.right * (m_camera.speed * p_deltaTime);
+    if (glfwGetKey(m_window, GLFW_KEY_Q) == GLFW_PRESS)
+        m_camera.position.y -= (m_camera.speed * p_deltaTime);
+    if (glfwGetKey(m_window, GLFW_KEY_E) == GLFW_PRESS)
+        m_camera.position.y += (m_camera.speed * p_deltaTime);
+}
+
+void VulkanEngine::OnKeyPressed(int p_key, int p_scancode, int p_action, int p_mods) {
+    if (p_key == GLFW_KEY_ESCAPE && p_action == GLFW_PRESS)
+        glfwSetWindowShouldClose(m_window, true);
+
+    if (p_key == GLFW_KEY_Z && p_action == GLFW_PRESS) {
+        m_drawTerrainWire = !m_drawTerrainWire;
+        m_terrain.material->pipeline = m_drawTerrainWire ? m_terrainWiredPipeline : m_terrainPipeline;
+    }
 }
 
 bool VulkanEngine::LoadShaderModule(const std::filesystem::path &p_path, VkShaderModule *p_outModule) {
@@ -1335,6 +1646,12 @@ VkPipeline PipelineBuilder::BuildPipeline(VkDevice device, VkRenderPass pass) {
 	pipelineInfo.subpass = 0;
 	pipelineInfo.basePipelineHandle = VK_NULL_HANDLE;
     pipelineInfo.pDepthStencilState = &m_depthStencil;
+
+    if (m_inputAssembly.topology & VK_PRIMITIVE_TOPOLOGY_PATCH_LIST) {
+        pipelineInfo.pTessellationState = &m_tessellationState;
+    } else {
+        pipelineInfo.pTessellationState = VK_NULL_HANDLE;
+    }
 
 	//it's easy to error out on create graphics pipeline, so we handle it a bit better than the common VK_CHECK case
 	VkPipeline newPipeline;

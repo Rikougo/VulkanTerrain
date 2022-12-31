@@ -12,7 +12,7 @@
 #include <VulkanTypes.hpp>
 
 #include <tiny_obj_loader.h>
-#include <glm/vec3.hpp>
+#include <glm/glm.hpp>
 
 struct VertexInputDescription {
 
@@ -26,6 +26,7 @@ struct Vertex {
     glm::vec3 position;
     glm::vec3 normal;
     glm::vec3 color;
+    glm::vec2 uv;
 
     static VertexInputDescription GetVertexDescription();
 };
@@ -37,5 +38,9 @@ struct Mesh {
 
     bool LoadFromObj(const std::filesystem::path &p_path);
 };
+
+namespace VulkanUtil {
+    Mesh CreateQuad(float p_size = 1, uint8_t p_resolution = 1);
+}
 
 #endif //VULKAN_TERRAIN_VULKAN_MESH_HPP

@@ -108,6 +108,15 @@ VkPipelineColorBlendAttachmentState VulkanInit::ColorBlendAttachmentState() {
     return l_colorBlendAttachment;
 }
 
+VkPipelineTessellationStateCreateInfo VulkanInit::TessellationStateCreateInfo(uint32_t p_patchControlPoints) {
+    VkPipelineTessellationStateCreateInfo l_info = {};
+    l_info.sType = VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO;
+    l_info.pNext = nullptr;
+
+    l_info.patchControlPoints = p_patchControlPoints;
+    return l_info;
+}
+
 VkPipelineLayoutCreateInfo VulkanInit::PipelineLayoutCreateInfo() {
     VkPipelineLayoutCreateInfo l_info{};
     l_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -121,6 +130,7 @@ VkPipelineLayoutCreateInfo VulkanInit::PipelineLayoutCreateInfo() {
     l_info.pPushConstantRanges = nullptr;
     return l_info;
 }
+
 
 VkImageCreateInfo VulkanInit::ImageCreateInfo(VkFormat p_format, VkImageUsageFlags p_usageFlags, VkExtent3D p_extent) {
     VkImageCreateInfo l_info = { };
@@ -227,4 +237,32 @@ VkSubmitInfo VulkanInit::SubmitInfo(VkCommandBuffer *p_cmd) {
     l_info.pSignalSemaphores = nullptr;
 
 	return l_info;
+};
+
+VkSamplerCreateInfo VulkanInit::SamplerCreateInfo(VkFilter p_filters, VkSamplerAddressMode p_samplerAddressMode /*= VK_SAMPLER_ADDRESS_MODE_REPEAT*/){
+    VkSamplerCreateInfo l_info = {};
+    l_info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    l_info.pNext = nullptr;
+
+    l_info.magFilter = p_filters;
+    l_info.minFilter = p_filters;
+    l_info.addressModeU = p_samplerAddressMode;
+    l_info.addressModeV = p_samplerAddressMode;
+    l_info.addressModeW = p_samplerAddressMode;
+
+	return l_info;
+};
+
+VkWriteDescriptorSet VulkanInit::WriteDescriptorImage(VkDescriptorType p_type, VkDescriptorSet p_dstSet, VkDescriptorImageInfo* p_imageInfo, uint32_t p_binding){
+    VkWriteDescriptorSet l_write = {};
+    l_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    l_write.pNext = nullptr;
+
+    l_write.dstBinding = p_binding;
+    l_write.dstSet = p_dstSet;
+    l_write.descriptorCount = 1;
+    l_write.descriptorType = p_type;
+    l_write.pImageInfo = p_imageInfo;
+
+    return l_write;
 };

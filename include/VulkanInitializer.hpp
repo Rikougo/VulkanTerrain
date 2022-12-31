@@ -17,6 +17,7 @@ namespace VulkanInit {
     VkPipelineRasterizationStateCreateInfo RasterizationStateCreateInfo(VkPolygonMode p_polygonMode);
     VkPipelineMultisampleStateCreateInfo MultisampleStateCreateInfo();
     VkPipelineColorBlendAttachmentState ColorBlendAttachmentState();
+    VkPipelineTessellationStateCreateInfo TessellationStateCreateInfo(uint32_t p_patchControlPoints);
 
     VkPipelineLayoutCreateInfo PipelineLayoutCreateInfo();
 
@@ -31,6 +32,9 @@ namespace VulkanInit {
 
     VkCommandBufferBeginInfo CommandBufferBeginInfo(VkCommandBufferUsageFlags p_flags = 0);
     VkSubmitInfo SubmitInfo(VkCommandBuffer *p_cmd);
+
+    VkSamplerCreateInfo SamplerCreateInfo(VkFilter p_filters, VkSamplerAddressMode p_samplerAddressMode = VK_SAMPLER_ADDRESS_MODE_REPEAT);
+    VkWriteDescriptorSet WriteDescriptorImage(VkDescriptorType p_type, VkDescriptorSet p_dstSet, VkDescriptorImageInfo* p_imageInfo, uint32_t p_binding);
 }
 
 #endif //VULKAN_TERRAIN_VULKAN_INITIALIZER_HPP
