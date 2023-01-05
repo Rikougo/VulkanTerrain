@@ -12,6 +12,7 @@ layout (location = 1) in vec2 inTexCoord[];
 // varying output to evaluation shader
 layout (location = 0) out vec3 outNormal[];
 layout (location = 1) out vec2 outTexCoord[];
+layout (location = 2) out float outDisplacement[];
 
 layout(set = 0, binding = 0) uniform  CameraBuffer {
 	mat4 view;
@@ -25,10 +26,11 @@ layout(set = 0, binding = 1) uniform  SceneData{
 	vec4 sunlightDirection; //w for sun power
 	vec4 sunlightColor;
     float terrainSubdivision;
+    float displacementFactor;
 } sceneData;
 
-float MAX_DISTANCE = 5.0f;
-float MIN_DISTANCE = 0.5f;
+float MAX_DISTANCE = 50.0f;
+float MIN_DISTANCE = 10.0f;
 
 void main()
 {
@@ -37,6 +39,7 @@ void main()
     gl_out[gl_InvocationID].gl_Position = gl_in[gl_InvocationID].gl_Position;
 	outNormal[gl_InvocationID] = inNormal[gl_InvocationID];
     outTexCoord[gl_InvocationID] = inTexCoord[gl_InvocationID];
+    outDisplacement[gl_InvocationID] = sceneData.displacementFactor;
 
     // ----------------------------------------------------------------------
     // invocation zero controls tessellation levels for the entire patch

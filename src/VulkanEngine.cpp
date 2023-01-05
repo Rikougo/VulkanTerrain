@@ -171,7 +171,7 @@ void VulkanEngine::LoadImages() {
 
 	m_loadedTextures["june"] = l_june;
 
-    VulkanUtil::LoadImageFromFile(*this, "assets/heightmap.jpg", l_heightmap.image);
+    VulkanUtil::LoadImageFromFile(*this, "assets/heightmap.png", l_heightmap.image);
 
 	VkImageViewCreateInfo l_heightmapInfo = VulkanInit::ImageViewCreateInfo(VK_FORMAT_R8G8B8A8_SRGB,
                                                                       l_heightmap.image.m_image, VK_IMAGE_ASPECT_COLOR_BIT);
@@ -202,7 +202,7 @@ void VulkanEngine::LoadMeshes() {
         }
     }
 
-    m_terrainMesh = VulkanUtil::CreateQuad(10.0f, 8);
+    m_terrainMesh = VulkanUtil::CreateQuad(200.0f, 16);
     UploadMesh(m_terrainMesh);
 }
 
@@ -1170,6 +1170,7 @@ void VulkanEngine::DrawUI() {
             ImGui::SliderFloat3("LightDirection", &m_sceneParameters.sunlightDirection.x, -1.0f, 1.0f);
             ImGui::ColorEdit3("LightColor", &m_sceneParameters.sunlightColor.x);
             ImGui::SliderFloat("Terrain subdivision", &m_sceneParameters.terrainSubdivision, 1.0f, 64.0f, "%.0f");
+            ImGui::SliderFloat("Terrain height", &m_sceneParameters.displacementFactor, 1.0f, 20.0f, "%.0f");
             ImGui::EndGroup();
             constexpr ImGuiTreeNodeFlags BASE_NODE_FLAGS = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_OpenOnDoubleClick;
 

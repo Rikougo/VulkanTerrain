@@ -6,6 +6,7 @@ layout(quads, equal_spacing, cw) in;
 
 layout (location = 0) in vec3 inNormal[];
 layout (location = 1) in vec2 inUV[];
+layout (location = 2) in float inDisplacement[];
 
 layout (location = 0) out vec3 outNormal;
 layout (location = 1) out vec2 outUV;
@@ -81,11 +82,16 @@ void main()
     vec4 p10 = gl_in[2].gl_Position;
     vec4 p11 = gl_in[3].gl_Position;
 
+    float t = texture(heightMap, outUV - vec2( 0.0f, 0.05f)).r;
+    float d = texture(heightMap, outUV + vec2( 0.0f, 0.05f)).r;
+    float l = texture(heightMap, outUV - vec2(0.05f,  0.0f)).r;
+    float r = texture(heightMap, outUV + vec2(0.05f,  0.0f)).r;
+
     // compute patch surface normal
-    vec4 uVec = p01 - p00;
-    vec4 vVec = p10 - p00;
-    vec4 normal = normalize( vec4(cross(vVec.xyz, uVec.xyz), 0) );
-    outNormal = vec3(normal);
+    vec4 uVec = (p01) - (p00);
+    vec4 vVec = (p10) - (p00);
+    vec4 normal = normalize(vec4(cross(vVec.xyz, uVec.xyz), 0));
+    outNormal = normalize(vec3(2 * r - l, 2 * d - t, -4));
 
     // bilinearly interpolate position coordinate across patch
     vec4 p0 = (p01 - p00) * u + p00;
@@ -93,7 +99,7 @@ void main()
     vec4 p = (p1 - p0) * v + p0;
 
     // displace point along normal
-    p += normal * outHeight;
+    p += normal * (outHeight  * inDisplacement[0]);
 
 	gl_Position = cameraData.viewproj * p;
 }
