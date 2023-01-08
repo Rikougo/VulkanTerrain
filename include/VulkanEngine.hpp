@@ -30,7 +30,10 @@
 #include <VkBootstrap.h>
 #include <glm/glm.hpp>
 #include <glm/gtx/transform.hpp>
+#include <stb_image.h>
 
+constexpr uint16_t BASE_TERRAIN_RESOLUTION = 16;
+constexpr uint16_t BASE_TERRAIN_SIZE = 25;
 constexpr uint8_t FRAME_AMOUNT = 2;
 
 struct DeletionQueue {
@@ -73,6 +76,10 @@ struct Material {
 struct Camera {
     glm::vec3 position;
     glm::vec3 rotation;
+
+    glm::mat4 view;
+    glm::mat4 projection;
+
     glm::vec3 forward;
     glm::vec3 right;
     float speed = 5.0f;
@@ -193,6 +200,11 @@ private:
 
     std::vector<RenderObject> m_renderables;
 
+    int m_heightmapWidth, m_heightmapHeight, m_heightmapChannels;
+    unsigned char* m_heightmapData;
+    Mesh m_cpuTerrainMesh;
+    Mesh m_debugCpuTerrainMesh;
+
     Mesh m_terrainMesh;
     Material m_terrainMaterial;
     VkPipeline m_terrainPipeline;
@@ -221,6 +233,7 @@ public:
     void ImmediateSubmit(std::function<void(VkCommandBuffer p_cmd)>&& function);
 
     void OnKeyPressed(int p_key, int p_scancode, int p_action, int p_mods);
+    void OnMouseButton(int p_button, int p_action, int p_mods);
 private:
     [[nodiscard]] size_t PadUniformBufferSize(size_t p_originalSize) const;
 
@@ -233,6 +246,7 @@ private:
     void UploadMesh(Mesh& p_mesh);
 
     void InitScene();
+    void ComputeCPUTerrainMesh();
 
     void InitVulkan();
     void InitSwapchain();
@@ -256,6 +270,7 @@ private:
     void DrawObjects(VkCommandBuffer p_cmd, RenderObject* p_first, uint32_t count);
     void DrawRenderObject(VkCommandBuffer p_cmd, RenderObject& p_object, Mesh* p_lastMesh, Material* p_lastMaterial, uint32_t p_index);
     void ProcessInputs(float p_deltaTime);
+    void RaycastOnTerrain(glm::vec3 p_direction, glm::vec3 p_origin);
 
     static void FramebufferSizeCallback(GLFWwindow* p_window, int p_width, int p_height);
 };

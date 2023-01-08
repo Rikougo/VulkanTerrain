@@ -29,7 +29,7 @@ void main()
 
     vec3 ambient = 0.1f * sceneData.sunlightColor.rgb;
 
-    vec4 color = vec4(inHeight, inHeight, inHeight, 1.0f);
+    vec4 color = vec4(1.0f, 1.0f, 1.0f, 1.0f);//vec4(inHeight, inHeight, inHeight, 1.0f);
     const vec4 fogColor = vec4(0.0f, 0.0f, 0.0f, 0.0);
 	// outFragColor = mix(vec4((diffuse + ambient) * color.rgb, 1.0), fogColor, fog(0.25));
 	outFragColor = mix(color, fogColor, fog(0.25));

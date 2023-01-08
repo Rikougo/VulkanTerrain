@@ -42,6 +42,10 @@ void VulkanEngine::Init() {
         auto* engine = reinterpret_cast<VulkanEngine*>(glfwGetWindowUserPointer(p_window));
         engine->OnKeyPressed(p_key, p_scancode, p_action, p_mods);
     });
+    glfwSetMouseButtonCallback(m_window, [](GLFWwindow* p_window, int p_button, int p_action, int p_mods) {
+        auto* engine = reinterpret_cast<VulkanEngine*>(glfwGetWindowUserPointer(p_window));
+        engine->OnMouseButton(p_button, p_action, p_mods);
+    });
 
     InitVulkan();
     InitSwapchain();
@@ -55,6 +59,7 @@ void VulkanEngine::Init() {
 
     LoadImages();
     LoadMeshes();
+    ComputeCPUTerrainMesh();
 
     InitScene();
 
@@ -171,8 +176,8 @@ void VulkanEngine::LoadImages() {
 
 	m_loadedTextures["june"] = l_june;
 
-    VulkanUtil::LoadImageFromFile(*this, "assets/heightmap.png", l_heightmap.image);
-
+    m_heightmapData = stbi_load("assets/heightmap0.png", &m_heightmapWidth, &m_heightmapHeight, &m_heightmapChannels, STBI_grey);
+    VulkanUtil::LoadImageFromFile(*this, "assets/heightmap0.png", l_heightmap.image);
 	VkImageViewCreateInfo l_heightmapInfo = VulkanInit::ImageViewCreateInfo(VK_FORMAT_R8G8B8A8_SRGB,
                                                                       l_heightmap.image.m_image, VK_IMAGE_ASPECT_COLOR_BIT);
 	vkCreateImageView(m_device, &l_heightmapInfo, nullptr, &l_heightmap.imageView);
@@ -181,6 +186,7 @@ void VulkanEngine::LoadImages() {
 
     m_mainDeletionQueue.PushFunction([=]() {
         vkDestroyImageView(m_device, l_june.imageView, nullptr);
+        vkDestroyImageView(m_device, l_heightmap.imageView, nullptr);
     });
 }
 
@@ -202,7 +208,7 @@ void VulkanEngine::LoadMeshes() {
         }
     }
 
-    m_terrainMesh = VulkanUtil::CreateQuad(200.0f, 16);
+    m_terrainMesh = VulkanUtil::CreateQuad((float)BASE_TERRAIN_SIZE, BASE_TERRAIN_RESOLUTION);
     UploadMesh(m_terrainMesh);
 }
 
@@ -267,6 +273,60 @@ void VulkanEngine::UploadMesh(Mesh &p_mesh) {
     });
 
     vmaDestroyBuffer(m_allocator, stagingBuffer.m_buffer, stagingBuffer.m_allocation);
+}
+
+void VulkanEngine::ComputeCPUTerrainMesh() {
+    const int l_resolution = BASE_TERRAIN_RESOLUTION * m_sceneParameters.terrainSubdivision;
+    const int l_size = BASE_TERRAIN_SIZE;
+    const int l_vertexCount = l_resolution * l_resolution;
+    const int l_indexCount = (l_resolution - 1) * (l_resolution - 1) * 6;
+
+    std::vector<Vertex> l_vertices(l_vertexCount);
+
+    for (int i = 0; i < l_resolution; i++) {
+        for (int j = 0; j < l_resolution; j++) {
+            auto l_UV = glm::vec2((float)j / (float)l_resolution, (float)i / (float)l_resolution);
+            auto l_textureWidth = static_cast<int>(m_heightmapWidth * l_UV.x);
+            auto l_textureHeight = static_cast<int>(m_heightmapHeight * l_UV.y);
+            auto l_height = m_heightmapData[(l_textureWidth + l_textureHeight * m_heightmapWidth)];
+
+            l_vertices[i * l_resolution + j].position = glm::vec3(
+                    (((float)j / (float)l_resolution) * l_size) - l_size / 2.0f,
+                    l_height / 255.0f * 20.0f,
+                    (((float)i / (float)l_resolution) * l_size) - l_size / 2.0f);
+            l_vertices[i * l_resolution + j].normal = glm::vec3(0.0f, 1.0f, 0.0f);
+            l_vertices[i * l_resolution + j].uv = l_UV;
+        }
+    }
+
+    std::vector<uint32_t> l_indices(l_indexCount);
+    m_debugCpuTerrainMesh.m_vertices.resize(l_indexCount);
+
+    for (int i = 0; i < l_resolution - 1; i++) {
+        for (int j = 0; j < l_resolution - 1; j++) {
+            m_debugCpuTerrainMesh.m_vertices.push_back(l_vertices[i * l_resolution + j]);
+            m_debugCpuTerrainMesh.m_vertices.push_back(l_vertices[i * l_resolution + j + 1]);
+            m_debugCpuTerrainMesh.m_vertices.push_back(l_vertices[(i + 1) * l_resolution + j]);
+
+            m_debugCpuTerrainMesh.m_vertices.push_back(l_vertices[(i + 1) * l_resolution + j]);
+            m_debugCpuTerrainMesh.m_vertices.push_back(l_vertices[i * l_resolution + j + 1]);
+            m_debugCpuTerrainMesh.m_vertices.push_back(l_vertices[(i + 1) * l_resolution + j + 1]);
+
+            l_indices[(i * (l_resolution - 1) + j) * 6 + 0] = i * l_resolution + j;
+            l_indices[(i * (l_resolution - 1) + j) * 6 + 1] = i * l_resolution + j + 1;
+            l_indices[(i * (l_resolution - 1) + j) * 6 + 2] = (i + 1) * l_resolution + j;
+
+            l_indices[(i * (l_resolution - 1) + j) * 6 + 3] = (i + 1) * l_resolution + j;
+            l_indices[(i * (l_resolution - 1) + j) * 6 + 4] = i * l_resolution + j + 1;
+            l_indices[(i * (l_resolution - 1) + j) * 6 + 5] = (i + 1) * l_resolution + j + 1;
+        }
+    }
+
+    m_cpuTerrainMesh.m_vertices = l_vertices;
+    m_cpuTerrainMesh.m_indices = l_indices;
+
+    UploadMesh(m_debugCpuTerrainMesh);
+    m_mesh["debugCpuTerrainMesh"] = m_debugCpuTerrainMesh;
 }
 
 void VulkanEngine::ImmediateSubmit(std::function<void(VkCommandBuffer p_cmd)>&& function) {
@@ -354,17 +414,28 @@ void VulkanEngine::InitScene() {
             &heightMapBufferInfo, 0);
     vkUpdateDescriptorSets(m_device, 1, &heightmap1, 0, nullptr);
 
+
     m_camera.position = glm::vec3{0.0f,0.0f,-10.0f};
     m_camera.forward = glm::vec3{0.0f,0.0f,1.0f};
     m_camera.right = glm::cross(m_camera.forward, glm::vec3{0.0f,1.0f,0.0f});
 
     m_sceneParameters.sunlightDirection = glm::vec4{1.0f, 0.0f, 0.0f, 0.0f};
     m_sceneParameters.sunlightColor = glm::vec4{1.0f, 1.0f, 1.0f, 1.0f};
+    m_sceneParameters.terrainSubdivision = 64;
+    m_sceneParameters.displacementFactor = 20;
 
     std::string l_defaultMesh = m_mesh.begin()->first;
 
     m_terrain.mesh = &m_terrainMesh;
     m_terrain.material = &m_terrainMaterial;
+
+    RenderObject l_debugTerrain{};
+    l_debugTerrain.material = GetMaterial("defaultmesh");
+    l_debugTerrain.mesh = GetMesh("debugCpuTerrainMesh");
+    l_debugTerrain.materialName = "defaultmesh";
+    l_debugTerrain.meshName = "debugCpuTerrainMesh";
+
+    m_renderables.push_back(l_debugTerrain);
 }
 
 void VulkanEngine::InitVulkan() {
@@ -640,11 +711,6 @@ void VulkanEngine::InitFramebuffers() {
         l_framebufferInfo.pAttachments = l_attachments;
         l_framebufferInfo.attachmentCount = 2;
 		VK_CHECK(vkCreateFramebuffer(m_device, &l_framebufferInfo, nullptr, &m_framebuffers[i]));
-
-        /*m_mainDeletionQueue.PushFunction([=]() {
-			vkDestroyFramebuffer(m_device, m_framebuffers[i], nullptr);
-			vkDestroyImageView(m_device, m_swapchainImageViews[i], nullptr);
-    	});*/
 	}
 }
 
@@ -1052,6 +1118,7 @@ void VulkanEngine::InitPipelines() {
 
 		vkDestroyPipelineLayout(m_device, l_meshPipelineLayout, nullptr);
         vkDestroyPipelineLayout(m_device, l_texturedPipeLayout, nullptr);
+        vkDestroyPipelineLayout(m_device, l_terrainPipelineLayout, nullptr);
     });
 }
 
@@ -1354,6 +1421,9 @@ void VulkanEngine::DrawObjects(VkCommandBuffer p_cmd, RenderObject* p_first, uin
             0.1f, 200.0f);
 	projection[1][1] *= -1;
 
+    m_camera.view = view;
+    m_camera.projection = projection;
+
 	//fill a GPU camera data struct
 	GPUCameraData camData{};
 	camData.proj = projection;
@@ -1546,6 +1616,79 @@ void VulkanEngine::OnKeyPressed(int p_key, int p_scancode, int p_action, int p_m
         m_drawTerrainWire = !m_drawTerrainWire;
         m_terrain.material->pipeline = m_drawTerrainWire ? m_terrainWiredPipeline : m_terrainPipeline;
     }
+}
+
+void VulkanEngine::OnMouseButton(int p_button, int p_action, int p_mods) {
+    if (p_button == GLFW_MOUSE_BUTTON_LEFT && p_action == GLFW_PRESS) {
+        double l_x, l_y;
+        glfwGetCursorPos(m_window, &l_x, &l_y);
+
+        glm::mat4 view = glm::lookAt(m_camera.position, m_camera.position + m_camera.forward,
+                                     glm::vec3{0.0f, 1.0f, 0.0f});
+        //camera projection
+        glm::mat4 projection = glm::perspective(
+                glm::radians(90.f),
+                static_cast<float>(m_windowExtent.width) / static_cast<float>(m_windowExtent.height),
+                0.1f, 200.0f);
+        projection[1][1] *= -1;
+
+        glm::vec3 l_ndc = glm::vec3{
+                (static_cast<float>(l_x) * 2.0f) / static_cast<float>(m_windowExtent.width) - 1.0f,
+                (static_cast<float>(l_y) * 2.0f) / static_cast<float>(m_windowExtent.height) - 1.0f,
+                1.0f};
+        glm::vec4 l_clip = glm::vec4{l_ndc.x, l_ndc.y, -1.0f, 1.0f};
+        glm::vec4 l_eye = glm::inverse(projection) * l_clip;
+        l_eye = glm::vec4{l_eye.x, l_eye.y, -1.0f, 0.0f};
+        glm::vec3 l_ray = glm::vec3{glm::inverse(view) * l_eye};
+        l_ray = glm::normalize(l_ray);
+
+        RaycastOnTerrain(l_ray, m_camera.position);
+    }
+}
+
+void VulkanEngine::RaycastOnTerrain(glm::vec3 p_direction, glm::vec3 p_origin) {
+    bool l_found = false;
+    float l_minT = std::numeric_limits<float>::max();
+    glm::vec3 l_minPos{};
+
+    for (int i = 0; i < m_cpuTerrainMesh.m_indices.size(); i += 3) {
+        glm::vec3 l_v0 = m_cpuTerrainMesh.m_vertices[m_cpuTerrainMesh.m_indices[i]].position;
+        glm::vec3 l_v1 = m_cpuTerrainMesh.m_vertices[m_cpuTerrainMesh.m_indices[i + 1]].position;
+        glm::vec3 l_v2 = m_cpuTerrainMesh.m_vertices[m_cpuTerrainMesh.m_indices[i + 2]].position;
+
+        glm::vec3 l_edge1 = l_v1 - l_v0;
+        glm::vec3 l_edge2 = l_v2 - l_v0;
+        glm::vec3 l_h = glm::cross(p_direction, l_edge2);
+        float l_a = glm::dot(l_edge1, l_h);
+
+        if (l_a > -0.00001f && l_a < 0.00001f)
+            continue;
+
+        float l_f = 1.0f / l_a;
+        glm::vec3 l_s = p_origin - l_v0;
+        float l_u = l_f * glm::dot(l_s, l_h);
+
+        if (l_u < 0.0f || l_u > 1.0f)
+            continue;
+
+        glm::vec3 l_q = glm::cross(l_s, l_edge1);
+        float l_v = l_f * glm::dot(p_direction, l_q);
+
+        if (l_v < 0.0f || l_u + l_v > 1.0f)
+            continue;
+
+        float l_t = l_f * glm::dot(l_edge2, l_q);
+
+        if (l_t > 0.00001f) {
+            l_found = true;
+            if (l_t < l_minT) {
+                l_minT = l_t;
+                l_minPos = l_v0;
+            }
+        }
+    }
+
+    std::cout << "Found " << l_found << " at " << l_minPos.x << ", " << l_minPos.y << ", " << l_minPos.z << std::endl;
 }
 
 bool VulkanEngine::LoadShaderModule(const std::filesystem::path &p_path, VkShaderModule *p_outModule) {
