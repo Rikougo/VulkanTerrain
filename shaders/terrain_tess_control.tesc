@@ -27,7 +27,7 @@ layout(set = 0, binding = 1) uniform  SceneData {
     float minDistance;
     float maxDistance;
 	vec3 clickedPoint;
-    bool useLightning;
+    uint viewMode;
 } sceneData;
 
 void main()

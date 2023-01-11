@@ -29,6 +29,31 @@ bool VulkanUtil::LoadImageFromFile(VulkanEngine &p_engine, std::filesystem::path
 }
 
 bool VulkanUtil::LoadImageFromData(VulkanEngine &p_engine, unsigned char* p_imageData, int p_texWidth, int p_texHeight, AllocatedImage &p_outImage, VkFormat p_imageFormat) {
+	VkExtent3D imageExtent;
+	imageExtent.width = static_cast<uint32_t>(p_texWidth);
+	imageExtent.height = static_cast<uint32_t>(p_texHeight);
+	imageExtent.depth = 1;
+
+    VkFormat l_imageFormat = p_imageFormat;
+	VkImageCreateInfo dimg_info = VulkanInit::ImageCreateInfo(l_imageFormat, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, imageExtent);
+
+	AllocatedImage l_newImage{};
+
+	VmaAllocationCreateInfo dimageAllocInfo = {};
+	dimageAllocInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+
+	//allocate and create the image
+	vmaCreateImage(p_engine.m_allocator, &dimg_info,
+                   &dimageAllocInfo, &l_newImage.m_image, &l_newImage.m_allocation,
+                   nullptr);
+
+    UpdateImage(p_engine, p_imageData, p_texWidth, p_texHeight, l_newImage, p_imageFormat);
+
+	p_outImage = l_newImage;
+	return true;
+}
+
+void VulkanUtil::UpdateImage(VulkanEngine &p_engine, unsigned char *p_imageData, int p_texWidth, int p_texHeight, AllocatedImage &p_outImage, VkFormat p_imageFormat) {
     void* l_pxlPtr = p_imageData;
 	VkDeviceSize l_imageSize = p_texWidth * p_texHeight * 4;
 
@@ -51,18 +76,6 @@ bool VulkanUtil::LoadImageFromData(VulkanEngine &p_engine, unsigned char* p_imag
 	imageExtent.height = static_cast<uint32_t>(p_texHeight);
 	imageExtent.depth = 1;
 
-	VkImageCreateInfo dimg_info = VulkanInit::ImageCreateInfo(l_imageFormat, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, imageExtent);
-
-	AllocatedImage l_newImage;
-
-	VmaAllocationCreateInfo dimageAllocInfo = {};
-	dimageAllocInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
-
-	//allocate and create the image
-	vmaCreateImage(p_engine.m_allocator, &dimg_info,
-                   &dimageAllocInfo, &l_newImage.m_image, &l_newImage.m_allocation,
-                   nullptr);
-
     p_engine.ImmediateSubmit([&](VkCommandBuffer cmd) {
 		VkImageSubresourceRange l_range;
 		l_range.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
@@ -76,7 +89,7 @@ bool VulkanUtil::LoadImageFromData(VulkanEngine &p_engine, unsigned char* p_imag
 
 		imageBarrier_toTransfer.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 		imageBarrier_toTransfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-		imageBarrier_toTransfer.image = l_newImage.m_image;
+		imageBarrier_toTransfer.image = p_outImage.m_image;
 		imageBarrier_toTransfer.subresourceRange = l_range;
 
 		imageBarrier_toTransfer.srcAccessMask = 0;
@@ -100,7 +113,7 @@ bool VulkanUtil::LoadImageFromData(VulkanEngine &p_engine, unsigned char* p_imag
         copyRegion.imageExtent = imageExtent;
 
         //copy the buffer into the image
-        vkCmdCopyBufferToImage(cmd, stagingBuffer.m_buffer, l_newImage.m_image,
+        vkCmdCopyBufferToImage(cmd, stagingBuffer.m_buffer, p_outImage.m_image,
                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copyRegion);
 
         VkImageMemoryBarrier imageBarrier_toReadable = imageBarrier_toTransfer;
@@ -118,13 +131,5 @@ bool VulkanUtil::LoadImageFromData(VulkanEngine &p_engine, unsigned char* p_imag
                              &imageBarrier_toReadable);
     });
 
-
-    /*p_engine.m_mainDeletionQueue.PushFunction([=]() {
-		vmaDestroyImage(p_engine.m_allocator, l_newImage.m_image, l_newImage.m_allocation);
-	});*/
-
-	vmaDestroyBuffer(p_engine.m_allocator, stagingBuffer.m_buffer, stagingBuffer.m_allocation);
-
-	p_outImage = l_newImage;
-	return true;
+    vmaDestroyBuffer(p_engine.m_allocator, stagingBuffer.m_buffer, stagingBuffer.m_allocation);
 }

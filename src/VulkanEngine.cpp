@@ -290,7 +290,7 @@ void VulkanEngine::UploadMesh(Mesh &p_mesh) {
 }
 
 void VulkanEngine::ComputeCPUTerrainMesh() {
-    const int l_resolution = BASE_TERRAIN_RESOLUTION * (int)m_sceneParameters.terrainSubdivision;
+    const int l_resolution = BASE_TERRAIN_RESOLUTION * std::min((int)m_sceneParameters.terrainSubdivision, 8);
     const int l_size = BASE_TERRAIN_SIZE;
     const int l_vertexCount = l_resolution * l_resolution;
     const int l_indexCount = (l_resolution - 1) * (l_resolution - 1) * 6;
@@ -315,18 +315,9 @@ void VulkanEngine::ComputeCPUTerrainMesh() {
     }
 
     std::vector<uint32_t> l_indices(l_indexCount);
-    // m_debugCpuTerrainMesh.m_vertices.resize(l_indexCount);
 
     for (int i = 0; i < l_resolution - 1; i++) {
         for (int j = 0; j < l_resolution - 1; j++) {
-            /*m_debugCpuTerrainMesh.m_vertices.push_back(l_vertices[i * l_resolution + j]);
-            m_debugCpuTerrainMesh.m_vertices.push_back(l_vertices[i * l_resolution + j + 1]);
-            m_debugCpuTerrainMesh.m_vertices.push_back(l_vertices[(i + 1) * l_resolution + j]);
-
-            m_debugCpuTerrainMesh.m_vertices.push_back(l_vertices[(i + 1) * l_resolution + j]);
-            m_debugCpuTerrainMesh.m_vertices.push_back(l_vertices[i * l_resolution + j + 1]);
-            m_debugCpuTerrainMesh.m_vertices.push_back(l_vertices[(i + 1) * l_resolution + j + 1]);*/
-
             l_indices[(i * (l_resolution - 1) + j) * 6 + 0] = i * l_resolution + j;
             l_indices[(i * (l_resolution - 1) + j) * 6 + 1] = i * l_resolution + j + 1;
             l_indices[(i * (l_resolution - 1) + j) * 6 + 2] = (i + 1) * l_resolution + j;
@@ -339,9 +330,25 @@ void VulkanEngine::ComputeCPUTerrainMesh() {
 
     m_cpuTerrainMesh.m_vertices = l_vertices;
     m_cpuTerrainMesh.m_indices = l_indices;
+}
 
-    // UploadMesh(m_debugCpuTerrainMesh);
-    // m_mesh["debugCpuTerrainMesh"] = m_debugCpuTerrainMesh;
+void VulkanEngine::UpdateHeightmap() {
+    // Wait fence for last frame because it uses heightmap imageview
+    VK_CHECK(vkWaitForFences(m_device, 1, &m_frames[(m_frameNumber - 1) % 2].renderFence, VK_TRUE, 1000000000));
+
+    Texture l_heightmap = m_loadedTextures["heightmap"];
+
+    // vmaDestroyImage(m_allocator, l_heightmap.image.m_image, l_heightmap.image.m_allocation);
+    vkDestroyImageView(m_device, l_heightmap.imageView, nullptr);
+
+    VulkanUtil::UpdateImage(*this, m_heightmapData, m_heightmapWidth, m_heightmapHeight, l_heightmap.image, VK_FORMAT_R8G8B8A8_UNORM);
+	VkImageViewCreateInfo l_heightmapInfo = VulkanInit::ImageViewCreateInfo(VK_FORMAT_R8G8B8A8_UNORM, l_heightmap.image.m_image, VK_IMAGE_ASPECT_COLOR_BIT);
+
+    VK_CHECK(vkCreateImageView(m_device, &l_heightmapInfo, nullptr, &l_heightmap.imageView));
+
+    m_loadedTextures["heightmap"] = l_heightmap;
+
+    UpdateTexture(m_heightmapSampler, l_heightmap.imageView, m_terrainMaterial.heightmapSet);
 }
 
 void VulkanEngine::ImmediateSubmit(std::function<void(VkCommandBuffer p_cmd)>&& function) {
@@ -393,14 +400,6 @@ void VulkanEngine::InitScene() {
 
     m_terrain.mesh = &m_terrainMesh;
     m_terrain.material = &m_terrainMaterial;
-
-    /*RenderObject l_debugTerrain{};
-    l_debugTerrain.material = GetMaterial("defaultmesh");
-    l_debugTerrain.mesh = GetMesh("debugCpuTerrainMesh");
-    l_debugTerrain.materialName = "defaultmesh";
-    l_debugTerrain.meshName = "debugCpuTerrainMesh";
-
-    m_renderables.push_back(l_debugTerrain);*/
 }
 
 void VulkanEngine::UpdateTexture(VkSampler &p_sampler, VkImageView &p_imageView, VkDescriptorSet &p_imageSet) {
@@ -1268,10 +1267,7 @@ void VulkanEngine::DrawUI() {
             ImGui::SliderFloat("Min distance",&m_sceneParameters.minDistance,0.0f, 100.0f, "%.0f");
             ImGui::TableNextColumn();
             ImGui::SliderFloat("Max distance",&m_sceneParameters.maxDistance,0.0f, 100.0f, "%.0f");
-            ImGui::TableNextColumn();
-            ImGui::Checkbox("Lightning",&m_sceneParameters.useLightning);
-            ImGui::TableNextColumn();
-            ImGui::TableNextColumn();
+            ImGui::TableNextRow();
             ImGui::Text("Objects (%s)", std::to_string(m_renderables.size()).c_str());
             ImGui::TableNextColumn();
             if (ImGui::Button("Add")) {
@@ -1285,6 +1281,19 @@ void VulkanEngine::DrawUI() {
                 m_renderables.push_back(l_newObject);
             }
 
+            ImGui::EndTable();
+
+            ImGui::BeginTable("##TerrainDisplay", 3);
+            ImGui::TableNextColumn();
+            if (ImGui::Selectable("Lightning", m_sceneParameters.terrainDisplay == TerrainDisplay::LIGHTNING)) {
+                m_sceneParameters.terrainDisplay = TerrainDisplay::LIGHTNING;
+            } ImGui::TableNextColumn();
+            if (ImGui::Selectable("Height", m_sceneParameters.terrainDisplay == TerrainDisplay::HEIGHT)) {
+                m_sceneParameters.terrainDisplay = TerrainDisplay::HEIGHT;
+            } ImGui::TableNextColumn();
+            if (ImGui::Selectable("Normal", m_sceneParameters.terrainDisplay == TerrainDisplay::NORMAL)) {
+                m_sceneParameters.terrainDisplay = TerrainDisplay::NORMAL;
+            }
             ImGui::EndTable();
 
             if (l_terrainParametersChanged) {
@@ -1644,6 +1653,32 @@ void VulkanEngine::ProcessInputs(float p_deltaTime) {
         auto l_result = RaycastOnTerrain(l_ray, m_camera.position);
         if (l_result.found) {
             m_sceneParameters.clickedPoint = l_result.position;
+
+            auto l_imgX = static_cast<uint32_t>(l_result.uv.x * m_heightmapWidth);
+            auto l_imgY = static_cast<uint32_t>(l_result.uv.y * m_heightmapHeight);
+
+            constexpr uint32_t l_clickRadius = 64;
+
+            auto l_boundsX = std::pair<uint32_t, uint32_t>{
+                std::max((uint32_t)0, l_imgX - l_clickRadius),
+                std::min((uint32_t)(m_heightmapWidth - 1), l_imgX + l_clickRadius)};
+
+            auto l_boundsY = std::pair<uint32_t, uint32_t>{
+                std::max((uint32_t)0, l_imgY - l_clickRadius),
+                std::min((uint32_t)(m_heightmapHeight - 1), l_imgY + l_clickRadius)};
+
+            for(int y = l_boundsY.first; y < l_boundsY.second; y++) {
+                for(int x = l_boundsX.first; x < l_boundsX.second; x++) {
+                    auto l_index = (y * m_heightmapWidth + x) * m_heightmapChannels;
+                    m_heightmapData[l_index + 0] = 255;
+                    m_heightmapData[l_index + 1] = 255;
+                    m_heightmapData[l_index + 2] = 255;
+                    m_heightmapData[l_index + 3] = 255;
+                }
+            }
+
+            UpdateHeightmap();
+            ComputeCPUTerrainMesh();
         }
     }
 
@@ -1701,7 +1736,7 @@ void VulkanEngine::OnKeyPressed(int p_key, int p_scancode, int p_action, int p_m
 }
 
 void VulkanEngine::OnMouseButton(int p_button, int p_action, int p_mods) {
-    if (p_button == GLFW_MOUSE_BUTTON_LEFT && p_action == GLFW_PRESS) {
+    if (p_button == GLFW_MOUSE_BUTTON_LEFT || p_button == GLFW_MOUSE_BUTTON_RIGHT && p_action == GLFW_PRESS) {
         double l_x, l_y;
         glfwGetCursorPos(m_window, &l_x, &l_y);
 
@@ -1727,6 +1762,32 @@ void VulkanEngine::OnMouseButton(int p_button, int p_action, int p_mods) {
         auto l_result = RaycastOnTerrain(l_ray, m_camera.position);
         if (l_result.found) {
             m_sceneParameters.clickedPoint = l_result.position;
+
+            auto l_imgX = static_cast<uint32_t>(l_result.uv.x * m_heightmapWidth);
+            auto l_imgY = static_cast<uint32_t>(l_result.uv.y * m_heightmapHeight);
+
+            constexpr uint32_t l_clickRadius = 64;
+
+            auto l_boundsX = std::pair<uint32_t, uint32_t>{
+                std::max((uint32_t)0, l_imgX - l_clickRadius),
+                std::min((uint32_t)(m_heightmapWidth - 1), l_imgX + l_clickRadius)};
+
+            auto l_boundsY = std::pair<uint32_t, uint32_t>{
+                std::max((uint32_t)0, l_imgY - l_clickRadius),
+                std::min((uint32_t)(m_heightmapHeight - 1), l_imgY + l_clickRadius)};
+
+            for(int y = l_boundsY.first; y < l_boundsY.second; y++) {
+                for(int x = l_boundsX.first; x < l_boundsX.second; x++) {
+                    auto l_index = (y * m_heightmapWidth + x) * m_heightmapChannels;
+                    m_heightmapData[l_index + 0] = p_button == GLFW_MOUSE_BUTTON_LEFT ? 0 : 255;
+                    m_heightmapData[l_index + 1] = p_button == GLFW_MOUSE_BUTTON_LEFT ? 0 : 255;
+                    m_heightmapData[l_index + 2] = p_button == GLFW_MOUSE_BUTTON_LEFT ? 0 : 255;
+                    m_heightmapData[l_index + 3] = p_button == GLFW_MOUSE_BUTTON_LEFT ? 0 : 255;
+                }
+            }
+
+            UpdateHeightmap();
+            ComputeCPUTerrainMesh();
         }
     }
 }

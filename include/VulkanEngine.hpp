@@ -11,6 +11,7 @@
 #include <functional>
 #include <deque>
 #include <format>
+#include <algorithm>
 
 #define VK_USE_PLATFORM_WIN32_KHR
 #define GLFW_INCLUDE_VULKAN
@@ -105,7 +106,7 @@ private:
     VkPipeline m_terrainPipeline;
     VkPipeline m_terrainWiredPipeline;
     RenderObject m_terrain;
-    bool m_drawTerrainWire = false;
+    bool m_drawTerrainWire{false};
 
     UploadContext m_uploadContext;
 
@@ -153,8 +154,9 @@ private:
     void LoadImages();
     void LoadMeshes();
     void UploadMesh(Mesh& p_mesh);
-    void ComputeCPUTerrainMesh();
     void InitScene();
+    void ComputeCPUTerrainMesh();
+    void UpdateHeightmap();
 
     void CleanupSwapchain();
     void RecreateSwapchain();

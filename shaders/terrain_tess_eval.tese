@@ -28,7 +28,7 @@ layout(set = 0, binding = 1) uniform  SceneData {
     float minDistance;
     float maxDistance;
 	vec3 clickedPoint;
-    bool useLightning;
+    uint viewMode;
 } sceneData;
 
 layout(set = 2, binding = 0) uniform sampler2D heightMap;

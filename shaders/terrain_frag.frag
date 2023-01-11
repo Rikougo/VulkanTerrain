@@ -18,7 +18,7 @@ layout(set = 0, binding = 1) uniform  SceneData{
 	float minDistance;
     float maxDistance;
 	vec3 clickedPoint;
-    bool useLightning;
+	uint viewMode;
 } sceneData;
 
 float fog(float density)
@@ -31,16 +31,29 @@ float fog(float density)
 
 void main()
 {
-	vec4 color = !sceneData.useLightning ? vec4(inNormal.xyz, 1.0f) : vec4(0.75f, 0.75f, 0.75f, 1.0f);
+	vec4 color;
+
+	switch (sceneData.viewMode) {
+		case 0:
+			color = vec4(0.75f, 0.75f, 0.75f, 1.0f);
+			break;
+		case 1:
+			color = vec4(inNormal.xyz, 1.0f);
+			break;
+		case 2:
+		default:
+			color = vec4(inHeight, inHeight, inHeight, 1.0f);
+			break;
+	}
 
 	bool selected = length(inPosition.xyz - sceneData.clickedPoint) < 0.25f;
 	if (selected) {
-		color = mix(vec4(0.2f, 0.0f, 0.8f, 1.0f), color, 1.0f - length(inPosition.xyz - sceneData.clickedPoint) * 5.0f);
+		color = mix(vec4(0.2f, 0.0f, 0.8f, 1.0f), color, length(inPosition.xyz - sceneData.clickedPoint) * 5.0f);
 	}
 
     const vec4 fogColor = vec4(0.0f, 0.0f, 0.0f, 0.0);
 
-	if (sceneData.useLightning) {
+	if (sceneData.viewMode == 0) {
 		float diff = max(dot(inNormal, sceneData.sunlightDirection.xyz), 0.0);
 		vec3 diffuse = diff * sceneData.sunlightColor.rgb;
 		vec4 finalColor = mix(vec4((diffuse) * color.rgb, 1.0), fogColor, fog(0.25));

@@ -18,6 +18,12 @@
 #include <VulkanTypes.hpp>
 #include <VulkanMesh.hpp>
 
+enum TerrainDisplay {
+    LIGHTNING = 0,
+    NORMAL    = 1,
+    HEIGHT    = 2
+};
+
 struct DeletionQueue {
     std::deque<std::function<void()>> deletors;
 
@@ -136,7 +142,7 @@ struct GPUSceneData {
     float minDistance{5.0f};            // min distance before lowering terrain subdivision
     float maxDistance{10.0f};           // max distance of terrain subdivision
     glm::vec3 clickedPoint{0.0f}; // world space clicked point position
-    bool useLightning{false};           // either use lightning or not
+    TerrainDisplay terrainDisplay{HEIGHT};
 };
 
 struct GPUObjectData {
