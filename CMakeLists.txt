@@ -19,7 +19,7 @@ add_executable(${CMAKE_PROJECT_NAME} ${SOURCES}
         main.cpp
         src/VulkanInitializer.cpp
         src/VulkanEngine.cpp
-        src/VulkanMesh.cpp src/VulkanTextures.cpp include/VulkanTextures.hpp)
+        src/VulkanMesh.cpp src/VulkanTextures.cpp include/VulkanTextures.hpp include/VulkanEngineStruct.hpp)
 
 if (MSVC)
     target_compile_options(${CMAKE_PROJECT_NAME} PRIVATE /Zc:__cplusplus)
