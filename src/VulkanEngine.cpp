@@ -55,13 +55,14 @@ void VulkanEngine::Init() {
     InitSyncStructures();
     InitDescriptors();
     InitPipelines();
+    InitSampler();
     InitIMGUI();
 
     LoadImages();
     LoadMeshes();
-    ComputeCPUTerrainMesh();
 
     InitScene();
+    ComputeCPUTerrainMesh();
 
     m_initialized = true;
 }
@@ -76,6 +77,19 @@ void VulkanEngine::Run() {
 
         glfwPollEvents();
 
+        // Update CPU side terrain mesh used for raycasting/picking
+        if (m_terrainParametersChangeTimer > 0.0f) {
+            m_terrainParametersChangeTimer -= l_deltaTime;
+
+            if (m_terrainParametersChangeTimer <= 0.0f) {
+                std::cout << "Update CPU side terrain mesh... ";
+                auto l_start = std::chrono::high_resolution_clock::now();
+                ComputeCPUTerrainMesh();
+                auto l_elapsed = std::chrono::duration<float, std::chrono::seconds::period>(std::chrono::high_resolution_clock::now() - l_start).count();
+                std::cout << "Done in " << l_elapsed << "ms" <<std::endl;
+            }
+        }
+
         ProcessInputs(l_deltaTime);
 
         DrawUI();
@@ -87,6 +101,11 @@ void VulkanEngine::Run() {
 
 void VulkanEngine::Cleanup() {
     if (m_initialized) {
+        for(const auto& l_texture : m_loadedTextures) {
+            vmaDestroyImage(m_allocator, l_texture.second.image.m_image, l_texture.second.image.m_allocation);
+            vkDestroyImageView(m_device, l_texture.second.imageView, nullptr);
+        }
+
         std::vector<VkFence> l_fences(FRAME_AMOUNT);
         for(uint8_t i = 0; i < FRAME_AMOUNT; i++) l_fences[i] = m_frames[i].renderFence;
         vkWaitForFences(m_device, FRAME_AMOUNT, l_fences.data(), true, 1000000000);
@@ -106,7 +125,7 @@ void VulkanEngine::Cleanup() {
     }
 }
 
-AllocatedBuffer VulkanEngine::CreateBuffer(size_t p_allocSize, VkBufferUsageFlags p_usage, VmaMemoryUsage p_memoryUsage) {
+AllocatedBuffer VulkanEngine::CreateBuffer(size_t p_allocSize, VkBufferUsageFlags p_usage, VmaMemoryUsage p_memoryUsage) const {
     //allocate vertex buffer
 	VkBufferCreateInfo l_bufferInfo = {};
     l_bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
@@ -168,7 +187,7 @@ Mesh* VulkanEngine::GetMesh(const std::string& p_name) {
 void VulkanEngine::LoadImages() {
     Texture l_june{}, l_heightmap{};
 
-	VulkanUtil::LoadImageFromFile(*this, "assets/june.png", l_june.image);
+	VulkanUtil::LoadImageFromFile(*this, "assets/june.png", l_june.image, VK_FORMAT_R8G8B8A8_SRGB);
 
 	VkImageViewCreateInfo l_imageInfo = VulkanInit::ImageViewCreateInfo(VK_FORMAT_R8G8B8A8_SRGB,
                                                                       l_june.image.m_image, VK_IMAGE_ASPECT_COLOR_BIT);
@@ -176,18 +195,13 @@ void VulkanEngine::LoadImages() {
 
 	m_loadedTextures["june"] = l_june;
 
-    m_heightmapData = stbi_load("assets/heightmap0.png", &m_heightmapWidth, &m_heightmapHeight, &m_heightmapChannels, STBI_grey);
-    VulkanUtil::LoadImageFromFile(*this, "assets/heightmap0.png", l_heightmap.image);
-	VkImageViewCreateInfo l_heightmapInfo = VulkanInit::ImageViewCreateInfo(VK_FORMAT_R8G8B8A8_SRGB,
+    m_heightmapData = stbi_load("assets/render.png", &m_heightmapWidth, &m_heightmapHeight, &m_heightmapChannels, STBI_rgb_alpha);
+    VulkanUtil::LoadImageFromData(*this, m_heightmapData, m_heightmapWidth, m_heightmapHeight, l_heightmap.image, VK_FORMAT_R8G8B8A8_UNORM);
+	VkImageViewCreateInfo l_heightmapInfo = VulkanInit::ImageViewCreateInfo(VK_FORMAT_R8G8B8A8_UNORM,
                                                                       l_heightmap.image.m_image, VK_IMAGE_ASPECT_COLOR_BIT);
 	vkCreateImageView(m_device, &l_heightmapInfo, nullptr, &l_heightmap.imageView);
 
     m_loadedTextures["heightmap"] = l_heightmap;
-
-    m_mainDeletionQueue.PushFunction([=]() {
-        vkDestroyImageView(m_device, l_june.imageView, nullptr);
-        vkDestroyImageView(m_device, l_heightmap.imageView, nullptr);
-    });
 }
 
 void VulkanEngine::LoadMeshes() {
@@ -276,7 +290,7 @@ void VulkanEngine::UploadMesh(Mesh &p_mesh) {
 }
 
 void VulkanEngine::ComputeCPUTerrainMesh() {
-    const int l_resolution = BASE_TERRAIN_RESOLUTION * m_sceneParameters.terrainSubdivision;
+    const int l_resolution = BASE_TERRAIN_RESOLUTION * (int)m_sceneParameters.terrainSubdivision;
     const int l_size = BASE_TERRAIN_SIZE;
     const int l_vertexCount = l_resolution * l_resolution;
     const int l_indexCount = (l_resolution - 1) * (l_resolution - 1) * 6;
@@ -286,13 +300,14 @@ void VulkanEngine::ComputeCPUTerrainMesh() {
     for (int i = 0; i < l_resolution; i++) {
         for (int j = 0; j < l_resolution; j++) {
             auto l_UV = glm::vec2((float)j / (float)l_resolution, (float)i / (float)l_resolution);
-            auto l_textureWidth = static_cast<int>(m_heightmapWidth * l_UV.x);
-            auto l_textureHeight = static_cast<int>(m_heightmapHeight * l_UV.y);
-            auto l_height = m_heightmapData[(l_textureWidth + l_textureHeight * m_heightmapWidth)];
+            auto l_textureWidth = (int)((float)m_heightmapWidth * l_UV.x);
+            auto l_textureHeight = (int)((float)m_heightmapHeight * l_UV.y);
+            auto l_height = m_heightmapData[(l_textureWidth + l_textureHeight * m_heightmapWidth) * m_heightmapChannels];
+            auto l_normalizedHeight = ((float)(l_height) / 255.0f);
 
             l_vertices[i * l_resolution + j].position = glm::vec3(
                     (((float)j / (float)l_resolution) * l_size) - l_size / 2.0f,
-                    l_height / 255.0f * 20.0f,
+                    l_normalizedHeight * m_sceneParameters.displacementFactor,
                     (((float)i / (float)l_resolution) * l_size) - l_size / 2.0f);
             l_vertices[i * l_resolution + j].normal = glm::vec3(0.0f, 1.0f, 0.0f);
             l_vertices[i * l_resolution + j].uv = l_UV;
@@ -300,17 +315,17 @@ void VulkanEngine::ComputeCPUTerrainMesh() {
     }
 
     std::vector<uint32_t> l_indices(l_indexCount);
-    m_debugCpuTerrainMesh.m_vertices.resize(l_indexCount);
+    // m_debugCpuTerrainMesh.m_vertices.resize(l_indexCount);
 
     for (int i = 0; i < l_resolution - 1; i++) {
         for (int j = 0; j < l_resolution - 1; j++) {
-            m_debugCpuTerrainMesh.m_vertices.push_back(l_vertices[i * l_resolution + j]);
+            /*m_debugCpuTerrainMesh.m_vertices.push_back(l_vertices[i * l_resolution + j]);
             m_debugCpuTerrainMesh.m_vertices.push_back(l_vertices[i * l_resolution + j + 1]);
             m_debugCpuTerrainMesh.m_vertices.push_back(l_vertices[(i + 1) * l_resolution + j]);
 
             m_debugCpuTerrainMesh.m_vertices.push_back(l_vertices[(i + 1) * l_resolution + j]);
             m_debugCpuTerrainMesh.m_vertices.push_back(l_vertices[i * l_resolution + j + 1]);
-            m_debugCpuTerrainMesh.m_vertices.push_back(l_vertices[(i + 1) * l_resolution + j + 1]);
+            m_debugCpuTerrainMesh.m_vertices.push_back(l_vertices[(i + 1) * l_resolution + j + 1]);*/
 
             l_indices[(i * (l_resolution - 1) + j) * 6 + 0] = i * l_resolution + j;
             l_indices[(i * (l_resolution - 1) + j) * 6 + 1] = i * l_resolution + j + 1;
@@ -325,8 +340,8 @@ void VulkanEngine::ComputeCPUTerrainMesh() {
     m_cpuTerrainMesh.m_vertices = l_vertices;
     m_cpuTerrainMesh.m_indices = l_indices;
 
-    UploadMesh(m_debugCpuTerrainMesh);
-    m_mesh["debugCpuTerrainMesh"] = m_debugCpuTerrainMesh;
+    // UploadMesh(m_debugCpuTerrainMesh);
+    // m_mesh["debugCpuTerrainMesh"] = m_debugCpuTerrainMesh;
 }
 
 void VulkanEngine::ImmediateSubmit(std::function<void(VkCommandBuffer p_cmd)>&& function) {
@@ -362,58 +377,8 @@ void VulkanEngine::InitScene() {
         return;
     }
 
-    //create a sampler for the texture
-	VkSamplerCreateInfo samplerInfo = VulkanInit::SamplerCreateInfo(VK_FILTER_NEAREST);
-
-	VkSampler juneSampler, heightMapSampler;
-	vkCreateSampler(m_device, &samplerInfo, nullptr, &juneSampler);
-    vkCreateSampler(m_device, &samplerInfo, nullptr, &heightMapSampler);
-
-	Material* texturedMat =	GetMaterial("textured");
-
-	//allocate the descriptor set for single-texture to use on the material
-	VkDescriptorSetAllocateInfo l_texAllocInfo = {};
-	l_texAllocInfo.pNext = nullptr;
-	l_texAllocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-	l_texAllocInfo.descriptorPool = m_descriptorPool;
-	l_texAllocInfo.descriptorSetCount = 1;
-	l_texAllocInfo.pSetLayouts = &m_singleTextureSetLayout;
-
-    VkDescriptorSetAllocateInfo l_heightmapAllocInfo = {};
-	l_heightmapAllocInfo.pNext = nullptr;
-	l_heightmapAllocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-	l_heightmapAllocInfo.descriptorPool = m_descriptorPool;
-	l_heightmapAllocInfo.descriptorSetCount = 1;
-	l_heightmapAllocInfo.pSetLayouts = &m_heightmapSetLayout;
-
-	vkAllocateDescriptorSets(m_device, &l_texAllocInfo, &texturedMat->textureSet);
-    vkAllocateDescriptorSets(m_device, &l_heightmapAllocInfo, &m_terrainMaterial.heightmapSet);
-
-    m_mainDeletionQueue.PushFunction([=]() {
-        vkDestroySampler(m_device, juneSampler, nullptr);
-        vkDestroySampler(m_device, heightMapSampler, nullptr);
-    });
-
-	//write to the descriptor set so that it points to our empire_diffuse texture
-	VkDescriptorImageInfo imageBufferInfo{};
-	imageBufferInfo.sampler = juneSampler;
-	imageBufferInfo.imageView = m_loadedTextures["june"].imageView;
-	imageBufferInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-	VkWriteDescriptorSet texture1 = VulkanInit::WriteDescriptorImage(
-            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, texturedMat->textureSet,
-            &imageBufferInfo, 0);
-	vkUpdateDescriptorSets(m_device, 1, &texture1, 0, nullptr);
-
-    VkDescriptorImageInfo heightMapBufferInfo{};
-    heightMapBufferInfo.sampler = heightMapSampler;
-	heightMapBufferInfo.imageView = m_loadedTextures["heightmap"].imageView;
-	heightMapBufferInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-    VkWriteDescriptorSet heightmap1 = VulkanInit::WriteDescriptorImage(
-            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, m_terrainMaterial.heightmapSet,
-            &heightMapBufferInfo, 0);
-    vkUpdateDescriptorSets(m_device, 1, &heightmap1, 0, nullptr);
-
+    UpdateTexture(m_singleTextureSampler, m_loadedTextures["june"].imageView, m_terrainMaterial.heightmapSet);
+    UpdateTexture(m_heightmapSampler, m_loadedTextures["heightmap"].imageView, m_terrainMaterial.heightmapSet);
 
     m_camera.position = glm::vec3{0.0f,0.0f,-10.0f};
     m_camera.forward = glm::vec3{0.0f,0.0f,1.0f};
@@ -421,21 +386,32 @@ void VulkanEngine::InitScene() {
 
     m_sceneParameters.sunlightDirection = glm::vec4{1.0f, 0.0f, 0.0f, 0.0f};
     m_sceneParameters.sunlightColor = glm::vec4{1.0f, 1.0f, 1.0f, 1.0f};
-    m_sceneParameters.terrainSubdivision = 64;
-    m_sceneParameters.displacementFactor = 20;
+    m_sceneParameters.terrainSubdivision = 16;
+    m_sceneParameters.displacementFactor = 1;
 
     std::string l_defaultMesh = m_mesh.begin()->first;
 
     m_terrain.mesh = &m_terrainMesh;
     m_terrain.material = &m_terrainMaterial;
 
-    RenderObject l_debugTerrain{};
+    /*RenderObject l_debugTerrain{};
     l_debugTerrain.material = GetMaterial("defaultmesh");
     l_debugTerrain.mesh = GetMesh("debugCpuTerrainMesh");
     l_debugTerrain.materialName = "defaultmesh";
     l_debugTerrain.meshName = "debugCpuTerrainMesh";
 
-    m_renderables.push_back(l_debugTerrain);
+    m_renderables.push_back(l_debugTerrain);*/
+}
+
+void VulkanEngine::UpdateTexture(VkSampler &p_sampler, VkImageView &p_imageView, VkDescriptorSet &p_imageSet) {
+    VkDescriptorImageInfo textureBufferInfo{};
+    textureBufferInfo.sampler = p_sampler;
+	textureBufferInfo.imageView = p_imageView;
+	textureBufferInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    VkWriteDescriptorSet heightmap1 = VulkanInit::WriteDescriptorImage(
+            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, p_imageSet,
+            &textureBufferInfo, 0);
+    vkUpdateDescriptorSets(m_device, 1, &heightmap1, 0, nullptr);
 }
 
 void VulkanEngine::InitVulkan() {
@@ -793,7 +769,7 @@ void VulkanEngine::InitDescriptors() {
 
     VkDescriptorSetLayoutBinding l_sceneBufferBinding = VulkanInit::DescriptorSetLayoutBinding(
             VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
-            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, 1);
+            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT, 1);
 
     VkDescriptorSetLayoutBinding l_bindings[] = { l_cameraBufferBinding, l_sceneBufferBinding };
 
@@ -1122,6 +1098,39 @@ void VulkanEngine::InitPipelines() {
     });
 }
 
+void VulkanEngine::InitSampler() {
+    //create a sampler for the texture
+	VkSamplerCreateInfo samplerInfo = VulkanInit::SamplerCreateInfo(VK_FILTER_NEAREST);
+
+	vkCreateSampler(m_device, &samplerInfo, nullptr, &m_singleTextureSampler);
+    vkCreateSampler(m_device, &samplerInfo, nullptr, &m_heightmapSampler);
+
+	Material* texturedMat =	GetMaterial("textured");
+
+	//allocate the descriptor set for single-texture to use on the material
+	VkDescriptorSetAllocateInfo l_texAllocInfo = {};
+	l_texAllocInfo.pNext = nullptr;
+	l_texAllocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+	l_texAllocInfo.descriptorPool = m_descriptorPool;
+	l_texAllocInfo.descriptorSetCount = 1;
+	l_texAllocInfo.pSetLayouts = &m_singleTextureSetLayout;
+
+    VkDescriptorSetAllocateInfo l_heightmapAllocInfo = {};
+	l_heightmapAllocInfo.pNext = nullptr;
+	l_heightmapAllocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+	l_heightmapAllocInfo.descriptorPool = m_descriptorPool;
+	l_heightmapAllocInfo.descriptorSetCount = 1;
+	l_heightmapAllocInfo.pSetLayouts = &m_heightmapSetLayout;
+
+	vkAllocateDescriptorSets(m_device, &l_texAllocInfo, &texturedMat->textureSet);
+    vkAllocateDescriptorSets(m_device, &l_heightmapAllocInfo, &m_terrainMaterial.heightmapSet);
+
+    m_mainDeletionQueue.PushFunction([=]() {
+        vkDestroySampler(m_device, m_singleTextureSampler, nullptr);
+        vkDestroySampler(m_device, m_heightmapSampler, nullptr);
+    });
+}
+
 void VulkanEngine::InitIMGUI() {
     //1: create descriptor pool for IMGUI
 	// the size of the pool is very oversize, but it's copied from imgui demo itself.
@@ -1232,22 +1241,67 @@ void VulkanEngine::DrawUI() {
 
     if (*m_showInspectorWindow) {
         if (ImGui::Begin("Inspector", m_showInspectorWindow)) {
-            ImGui::BeginGroup();
-            ImGui::Text("Scene");
-            ImGui::SliderFloat3("LightDirection", &m_sceneParameters.sunlightDirection.x, -1.0f, 1.0f);
-            ImGui::ColorEdit3("LightColor", &m_sceneParameters.sunlightColor.x);
-            ImGui::SliderFloat("Terrain subdivision", &m_sceneParameters.terrainSubdivision, 1.0f, 64.0f, "%.0f");
-            ImGui::SliderFloat("Terrain height", &m_sceneParameters.displacementFactor, 1.0f, 20.0f, "%.0f");
-            ImGui::EndGroup();
+            bool l_terrainParametersChanged = false;
+            ImGui::BeginTable("Scene", 2);
+
+            ImGui::TableNextColumn();
+            static float s_lightRotation[2] = {0.0f, 0.0f};
+            if (ImGui::SliderFloat2("LightDirection",s_lightRotation, 0.0f, 360.0f)) {
+                m_sceneParameters.sunlightDirection = glm::vec4(
+                        cos(glm::radians(s_lightRotation[0])) * cos(glm::radians(s_lightRotation[1])),
+                        sin(glm::radians(s_lightRotation[0])),
+                        cos(glm::radians(s_lightRotation[0])) * sin(glm::radians(s_lightRotation[1])),
+                        1.0f
+                );
+            }
+            ImGui::TableNextColumn();
+            ImGui::ColorEdit3("LightColor",&m_sceneParameters.sunlightColor.x);
+            ImGui::TableNextColumn();
+            l_terrainParametersChanged |= ImGui::SliderFloat("Terrain subdivision",
+                                                             &m_sceneParameters.terrainSubdivision,
+                                                             1.0f, 64.0f, "%.0f");
+            ImGui::TableNextColumn();
+            l_terrainParametersChanged |= ImGui::SliderFloat("Terrain height",
+                                                             &m_sceneParameters.displacementFactor,
+                                                             1.0f, 20.0f, "%.0f");
+            ImGui::TableNextColumn();
+            ImGui::SliderFloat("Min distance",&m_sceneParameters.minDistance,0.0f, 100.0f, "%.0f");
+            ImGui::TableNextColumn();
+            ImGui::SliderFloat("Max distance",&m_sceneParameters.maxDistance,0.0f, 100.0f, "%.0f");
+            ImGui::TableNextColumn();
+            ImGui::Checkbox("Lightning",&m_sceneParameters.useLightning);
+            ImGui::TableNextColumn();
+            ImGui::TableNextColumn();
+            ImGui::Text("Objects (%s)", std::to_string(m_renderables.size()).c_str());
+            ImGui::TableNextColumn();
+            if (ImGui::Button("Add")) {
+                RenderObject l_newObject;
+                l_newObject.mesh = &m_mesh["sphere"];
+                l_newObject.meshName = "sphere";
+                l_newObject.material = &m_materials["defaultmesh"];
+                l_newObject.materialName = "defaultmesh";
+                l_newObject.active = true;
+
+                m_renderables.push_back(l_newObject);
+            }
+
+            ImGui::EndTable();
+
+            if (l_terrainParametersChanged) {
+                m_terrainParametersChangeTimer = 1.0f;
+            }
+
             constexpr ImGuiTreeNodeFlags BASE_NODE_FLAGS = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_OpenOnDoubleClick;
 
             uint32_t l_id{0};
+            std::vector<uint32_t> l_toDelete{};
             for(auto &l_renderObject : m_renderables) {
 
                 bool node_open = ImGui::TreeNodeEx(std::to_string(l_id).c_str(), BASE_NODE_FLAGS, "%s(%d)",
                                                l_renderObject.meshName.c_str(), l_id);
 
                 if (node_open) {
+                    ImGui::Checkbox("##Active", &l_renderObject.active);
                     if (ImGui::BeginCombo("##Mesh", l_renderObject.meshName.c_str(), ImGuiComboFlags_NoArrowButton)) {
                         for(auto &l_mesh : m_mesh) {
                             bool is_selected = (l_renderObject.meshName == l_mesh.first);
@@ -1276,12 +1330,20 @@ void VulkanEngine::DrawUI() {
                     }
                     ImGui::SliderFloat3(std::format("Position##{}", l_id).c_str(), &l_renderObject.position.x, -10.0f, 10.0f);
                     ImGui::SliderFloat3(std::format("Scale##{}", l_id).c_str(), &l_renderObject.scale.x, 1.0f, 10.0f);
+                    if (ImGui::Button(std::format("Delete##{}", l_id).c_str())) {
+                        l_toDelete.push_back(l_id);
+                    }
                     ImGui::TreePop();
                 }
 
                 l_id++;
             }
 
+            std::sort(l_toDelete.begin(), l_toDelete.end());
+            std::reverse(l_toDelete.begin(), l_toDelete.end());
+            for (auto l_deleteId : l_toDelete) {
+                m_renderables.erase(m_renderables.begin() + l_deleteId);
+            }
         }
         ImGui::End();
     }
@@ -1325,7 +1387,7 @@ void VulkanEngine::Draw() {
 
     //make a clear-color from frame number. This will flash with a 120*pi frame period.
 	VkClearValue clearValue;
-	clearValue.color = { { 0.0f, 0.0f, 0.0f, 1.0f } };
+	clearValue.color = { { 0.9f, 0.35f, 0.7f, 1.0f } };
 
 	//clear depth at 1
 	VkClearValue depthClear;
@@ -1413,22 +1475,15 @@ void VulkanEngine::Draw() {
 }
 
 void VulkanEngine::DrawObjects(VkCommandBuffer p_cmd, RenderObject* p_first, uint32_t p_count) {
-    glm::mat4 view = glm::lookAt(m_camera.position, m_camera.position + m_camera.forward, glm::vec3{0.0f, 1.0f, 0.0f});
+    glm::mat4 view = m_camera.view;
 	//camera projection
-	glm::mat4 projection = glm::perspective(
-            glm::radians(90.f),
-            static_cast<float>(m_windowExtent.width) / static_cast<float>(m_windowExtent.height),
-            0.1f, 200.0f);
-	projection[1][1] *= -1;
+	glm::mat4 projection = m_camera.projection;
 
-    m_camera.view = view;
-    m_camera.projection = projection;
-
-	//fill a GPU camera data struct
+    //fill a GPU camera data struct
 	GPUCameraData camData{};
 	camData.proj = projection;
 	camData.view = view;
-	camData.viewproj = projection * view;
+	camData.viewproj = m_camera.viewproj;
     camData.cameraPosition = m_camera.position;
 
 	//and copy it to the buffer
@@ -1485,7 +1540,9 @@ void VulkanEngine::DrawObjects(VkCommandBuffer p_cmd, RenderObject* p_first, uin
 	{
 		RenderObject& object = p_first[i];
 
-        DrawRenderObject(p_cmd, object, lastMesh, lastMaterial, i+1);
+        if (object.active) {
+            DrawRenderObject(p_cmd, object, lastMesh, lastMaterial, i+1);
+        }
 	}
 }
 
@@ -1569,43 +1626,68 @@ void VulkanEngine::ProcessInputs(float p_deltaTime) {
         }
     }
 
+    if (glfwGetKey(m_window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS) {
+        glm::mat4 view = m_camera.view;
+        //camera projection
+        glm::mat4 projection = m_camera.projection;
+
+        glm::vec3 l_ndc = glm::vec3{
+                (static_cast<float>(s_mousePos.x) * 2.0f) / static_cast<float>(m_windowExtent.width) - 1.0f,
+                (static_cast<float>(s_mousePos.y) * 2.0f) / static_cast<float>(m_windowExtent.height) - 1.0f,
+                1.0f};
+        glm::vec4 l_clip = glm::vec4{l_ndc.x, l_ndc.y, -1.0f, 1.0f};
+        glm::vec4 l_eye = glm::inverse(projection) * l_clip;
+        l_eye = glm::vec4{l_eye.x, l_eye.y, -1.0f, 0.0f};
+        glm::vec3 l_ray = glm::vec3{glm::inverse(view) * l_eye};
+        l_ray = glm::normalize(l_ray);
+
+        auto l_result = RaycastOnTerrain(l_ray, m_camera.position);
+        if (l_result.found) {
+            m_sceneParameters.clickedPoint = l_result.position;
+        }
+    }
+
     if (glfwGetMouseButton(m_window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS && glfwGetKey(m_window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS) {
-        bool l_cameraRotDirty = false;
         if (abs(l_lastMousePos.x - s_mousePos.x) > DEAD_ZONE) {
             auto l_newRotY = static_cast<float>(m_camera.rotation.y + (s_mousePos.x - l_lastMousePos.x));
             m_camera.rotation.y = l_newRotY;
-            l_cameraRotDirty = true;
+            m_camera.dirty = true;
         }
 
         if (abs(l_lastMousePos.y - s_mousePos.y) > DEAD_ZONE) {
             auto l_newRotX = static_cast<float>(m_camera.rotation.x + (l_lastMousePos.y - s_mousePos.y));
             l_newRotX = glm::clamp(l_newRotX, -89.0f, 89.0f);
             m_camera.rotation.x = l_newRotX;
-            l_cameraRotDirty = true;
-        }
-
-        if (l_cameraRotDirty) {
-            m_camera.forward = glm::normalize(glm::vec3{
-                    cos(glm::radians(m_camera.rotation.x)) * cos(glm::radians(m_camera.rotation.y)),
-                    sin(glm::radians(m_camera.rotation.x)),
-                    cos(glm::radians(m_camera.rotation.x)) * sin(glm::radians(m_camera.rotation.y))
-            });
-            m_camera.right = glm::normalize(glm::cross(m_camera.forward, {0.0f, 1.0f, 0.0f}));
+            m_camera.dirty = true;
         }
     }
 
-    if (glfwGetKey(m_window, GLFW_KEY_W) == GLFW_PRESS)
+    if (glfwGetKey(m_window, GLFW_KEY_W) == GLFW_PRESS){
         m_camera.position += m_camera.forward * (m_camera.speed * p_deltaTime);
-    if (glfwGetKey(m_window, GLFW_KEY_S) == GLFW_PRESS)
+        m_camera.dirty = true;
+    }
+    if (glfwGetKey(m_window, GLFW_KEY_S) == GLFW_PRESS) {
         m_camera.position -= m_camera.forward * (m_camera.speed * p_deltaTime);
-    if (glfwGetKey(m_window, GLFW_KEY_A) == GLFW_PRESS)
+        m_camera.dirty = true;
+    }
+    if (glfwGetKey(m_window, GLFW_KEY_A) == GLFW_PRESS) {
         m_camera.position -= m_camera.right * (m_camera.speed * p_deltaTime);
-    if (glfwGetKey(m_window, GLFW_KEY_D) == GLFW_PRESS)
+        m_camera.dirty = true;
+    }
+    if (glfwGetKey(m_window, GLFW_KEY_D) == GLFW_PRESS) {
         m_camera.position += m_camera.right * (m_camera.speed * p_deltaTime);
-    if (glfwGetKey(m_window, GLFW_KEY_Q) == GLFW_PRESS)
+        m_camera.dirty = true;
+    }
+    if (glfwGetKey(m_window, GLFW_KEY_Q) == GLFW_PRESS) {
         m_camera.position.y -= (m_camera.speed * p_deltaTime);
-    if (glfwGetKey(m_window, GLFW_KEY_E) == GLFW_PRESS)
+        m_camera.dirty = true;
+    }
+    if (glfwGetKey(m_window, GLFW_KEY_E) == GLFW_PRESS) {
         m_camera.position.y += (m_camera.speed * p_deltaTime);
+        m_camera.dirty = true;
+    }
+
+    m_camera.Update(m_windowExtent);
 }
 
 void VulkanEngine::OnKeyPressed(int p_key, int p_scancode, int p_action, int p_mods) {
@@ -1642,14 +1724,15 @@ void VulkanEngine::OnMouseButton(int p_button, int p_action, int p_mods) {
         glm::vec3 l_ray = glm::vec3{glm::inverse(view) * l_eye};
         l_ray = glm::normalize(l_ray);
 
-        RaycastOnTerrain(l_ray, m_camera.position);
+        auto l_result = RaycastOnTerrain(l_ray, m_camera.position);
+        if (l_result.found) {
+            m_sceneParameters.clickedPoint = l_result.position;
+        }
     }
 }
 
-void VulkanEngine::RaycastOnTerrain(glm::vec3 p_direction, glm::vec3 p_origin) {
-    bool l_found = false;
-    float l_minT = std::numeric_limits<float>::max();
-    glm::vec3 l_minPos{};
+RaycastResult VulkanEngine::RaycastOnTerrain(glm::vec3 p_direction, glm::vec3 p_origin) {
+    RaycastResult l_result{};
 
     for (int i = 0; i < m_cpuTerrainMesh.m_indices.size(); i += 3) {
         glm::vec3 l_v0 = m_cpuTerrainMesh.m_vertices[m_cpuTerrainMesh.m_indices[i]].position;
@@ -1679,16 +1762,25 @@ void VulkanEngine::RaycastOnTerrain(glm::vec3 p_direction, glm::vec3 p_origin) {
 
         float l_t = l_f * glm::dot(l_edge2, l_q);
 
+        /// compute barycentric coordinates for texure coordinates
+        glm::vec3 l_barycentric = glm::vec3{1.0f - l_u - l_v, l_u, l_v};
+        glm::vec2 l_uv = l_barycentric.x * m_cpuTerrainMesh.m_vertices[m_cpuTerrainMesh.m_indices[i]].uv +
+                         l_barycentric.y * m_cpuTerrainMesh.m_vertices[m_cpuTerrainMesh.m_indices[i + 1]].uv +
+                         l_barycentric.z * m_cpuTerrainMesh.m_vertices[m_cpuTerrainMesh.m_indices[i + 2]].uv;
+
         if (l_t > 0.00001f) {
-            l_found = true;
-            if (l_t < l_minT) {
-                l_minT = l_t;
-                l_minPos = l_v0;
+            l_result.found = true;
+            if (l_t < l_result.t) {
+                l_result.t = l_t;
+                l_result.position = p_origin + p_direction * l_t;
+                l_result.normal = glm::normalize(glm::cross(l_edge1, l_edge2));
+                l_result.uv = l_uv;
             }
         }
     }
 
-    std::cout << "Found " << l_found << " at " << l_minPos.x << ", " << l_minPos.y << ", " << l_minPos.z << std::endl;
+    // std::cout << "Found " << l_result.found << " at " << l_result.uv.x << ", " << l_result.uv.y << "; Height : " << l_result.position.y << std::endl;
+    return l_result;
 }
 
 bool VulkanEngine::LoadShaderModule(const std::filesystem::path &p_path, VkShaderModule *p_outModule) {
@@ -1727,85 +1819,18 @@ FrameData &VulkanEngine::GetCurrentFrame() {
 }
 
 void VulkanEngine::FramebufferSizeCallback(GLFWwindow* p_window, int p_width, int p_height) {
+    while(p_width == 0 || p_height == 0) {
+        glfwGetFramebufferSize(p_window, &p_width, &p_height);
+        glfwWaitEvents();
+    }
+
     auto l_engine = reinterpret_cast<VulkanEngine*>(glfwGetWindowUserPointer(p_window));
     auto l_width = static_cast<uint32_t>(p_width), l_height = static_cast<uint32_t>(p_height);
+
     if (l_width != l_engine->m_windowExtent.width || l_height != l_engine->m_windowExtent.height) {
         l_engine->m_framebufferResized = true;
     }
 
     l_engine->m_desiredWindowExtent.width = l_width;
     l_engine->m_desiredWindowExtent.height = l_height;
-}
-
-VkPipeline PipelineBuilder::BuildPipeline(VkDevice device, VkRenderPass pass) {
-    //make viewport state from our stored viewport and scissor.
-    //at the moment we won't support multiple viewports or scissors
-    VkPipelineViewportStateCreateInfo viewportState = {};
-    viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
-    viewportState.pNext = nullptr;
-
-    viewportState.viewportCount = 1;
-    // viewportState.pViewports = &m_viewport;
-    viewportState.scissorCount = 1;
-    // viewportState.pScissors = &m_scissor;
-
-    //setup dummy color blending. We aren't using transparent objects yet
-    //the blending is just "no blend", but we do write to the color attachment
-    VkPipelineColorBlendStateCreateInfo colorBlending = {};
-    colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-    colorBlending.pNext = nullptr;
-
-    colorBlending.logicOpEnable = VK_FALSE;
-    colorBlending.logicOp = VK_LOGIC_OP_COPY;
-    colorBlending.attachmentCount = 1;
-    colorBlending.pAttachments = &m_colorBlendAttachment;
-
-    //build the actual pipeline
-	//we now use all of the info structs we have been writing into into this one to create the pipeline
-	VkGraphicsPipelineCreateInfo pipelineInfo = {};
-	pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-	pipelineInfo.pNext = nullptr;
-
-    std::vector<VkDynamicState> dynamicStates = {
-            VK_DYNAMIC_STATE_VIEWPORT,
-            VK_DYNAMIC_STATE_SCISSOR
-        };
-    VkPipelineDynamicStateCreateInfo dynamicState{};
-    dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-    dynamicState.dynamicStateCount = static_cast<uint32_t>(dynamicStates.size());
-    dynamicState.pDynamicStates = dynamicStates.data();
-
-
-	pipelineInfo.stageCount = m_shaderStages.size();
-	pipelineInfo.pStages = m_shaderStages.data();
-	pipelineInfo.pVertexInputState = &m_vertexInputInfo;
-	pipelineInfo.pInputAssemblyState = &m_inputAssembly;
-	pipelineInfo.pViewportState = &viewportState;
-	pipelineInfo.pRasterizationState = &m_rasterizer;
-	pipelineInfo.pMultisampleState = &m_multisampling;
-	pipelineInfo.pColorBlendState = &colorBlending;
-    pipelineInfo.pDynamicState = &dynamicState;
-	pipelineInfo.layout = m_pipelineLayout;
-	pipelineInfo.renderPass = pass;
-	pipelineInfo.subpass = 0;
-	pipelineInfo.basePipelineHandle = VK_NULL_HANDLE;
-    pipelineInfo.pDepthStencilState = &m_depthStencil;
-
-    if (m_inputAssembly.topology & VK_PRIMITIVE_TOPOLOGY_PATCH_LIST) {
-        pipelineInfo.pTessellationState = &m_tessellationState;
-    } else {
-        pipelineInfo.pTessellationState = VK_NULL_HANDLE;
-    }
-
-	//it's easy to error out on create graphics pipeline, so we handle it a bit better than the common VK_CHECK case
-	VkPipeline newPipeline;
-	if (vkCreateGraphicsPipelines(
-		device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &newPipeline) != VK_SUCCESS) {
-		std::cout << "failed to create pipeline\n";
-		return VK_NULL_HANDLE; // failed to create graphics pipeline
-	}
-	else
-	{
-		return newPipeline;
-	}
 }

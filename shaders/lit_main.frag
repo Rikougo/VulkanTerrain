@@ -12,6 +12,10 @@ layout(set = 0, binding = 1) uniform  SceneData{
 	vec4 sunlightDirection; //w for sun power
 	vec4 sunlightColor;
     float terrainSubdivision;
+    float minDistance;
+    float maxDistance;
+	vec3 clickedPoint;
+    bool useLightning;
 } sceneData;
 
 void main()

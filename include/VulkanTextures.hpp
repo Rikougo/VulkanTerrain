@@ -12,7 +12,8 @@
 class VulkanEngine;
 
 namespace VulkanUtil {
-    bool LoadImageFromFile(VulkanEngine &p_engine, std::filesystem::path p_path, AllocatedImage& p_outImage);
+    bool LoadImageFromFile(VulkanEngine &p_engine, std::filesystem::path p_path, AllocatedImage& p_outImage, VkFormat p_imageFormat);
+    bool LoadImageFromData(VulkanEngine &p_engine, unsigned char* p_imageData, int p_texWidth, int p_texHeight, AllocatedImage &p_outImage, VkFormat p_imageFormat);
 }
 
 #endif //VULKAN_TERRAIN_VULKAN_TEXTURES_HPP

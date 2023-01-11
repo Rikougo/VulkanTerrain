@@ -22,6 +22,7 @@
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_vulkan.h>
 
+#include <VulkanEngineStruct.hpp>
 #include <VulkanTypes.hpp>
 #include <VulkanInitializer.hpp>
 #include <VulkanMesh.hpp>
@@ -35,114 +36,6 @@
 constexpr uint16_t BASE_TERRAIN_RESOLUTION = 16;
 constexpr uint16_t BASE_TERRAIN_SIZE = 25;
 constexpr uint8_t FRAME_AMOUNT = 2;
-
-struct DeletionQueue {
-    std::deque<std::function<void()>> deletors;
-
-    void PushFunction(std::function<void()>&& p_function) {
-        deletors.push_back(p_function);
-    }
-
-    void Flush() {
-        for (auto it = deletors.rbegin(); it != deletors.rend(); it++) {
-            (*it)();
-        }
-
-        deletors.clear();
-    }
-};
-
-struct FrameData {
-    VkSemaphore presentSemaphore, renderSemaphore;
-    VkFence renderFence;
-
-    VkCommandPool commandPool;
-    VkCommandBuffer mainCommandBuffer;
-
-    AllocatedBuffer cameraBuffer;
-    AllocatedBuffer objectBuffer;
-
-	VkDescriptorSet globalDescriptor;
-    VkDescriptorSet objectDescriptor;
-};
-
-struct Material {
-    VkDescriptorSet textureSet{VK_NULL_HANDLE};
-    VkDescriptorSet heightmapSet{VK_NULL_HANDLE};
-    VkPipeline pipeline;
-    VkPipelineLayout pipelineLayout;
-};
-
-struct Camera {
-    glm::vec3 position;
-    glm::vec3 rotation;
-
-    glm::mat4 view;
-    glm::mat4 projection;
-
-    glm::vec3 forward;
-    glm::vec3 right;
-    float speed = 5.0f;
-};
-
-struct RenderObject {
-    Mesh* mesh;
-    Material* material;
-    glm::vec3 position{0.0f};
-    glm::vec3 rotation{0.0f};
-    glm::vec3 scale{1.0f};
-    glm::mat4 transformMatrix;
-
-    std::string meshName;
-    std::string materialName;
-};
-
-struct Texture {
-    AllocatedImage image;
-    VkImageView imageView;
-};
-
-struct GPUCameraData{
-	glm::mat4 view;
-	glm::mat4 proj;
-	glm::mat4 viewproj;
-    glm::vec3 cameraPosition;
-};
-
-struct GPUSceneData {
-    glm::vec4 ambientColor;
-	glm::vec4 sunlightDirection; //w for sun power
-	glm::vec4 sunlightColor;
-    float terrainSubdivision{1.0f};
-    float displacementFactor{1.0f};
-};
-
-struct GPUObjectData {
-    glm::mat4 modelMatrix;
-};
-
-class PipelineBuilder {
-public:
-    std::vector<VkPipelineShaderStageCreateInfo> m_shaderStages;
-	VkPipelineVertexInputStateCreateInfo m_vertexInputInfo;
-	VkPipelineInputAssemblyStateCreateInfo m_inputAssembly;
-	VkViewport m_viewport;
-	VkRect2D m_scissor;
-	VkPipelineRasterizationStateCreateInfo m_rasterizer;
-	VkPipelineColorBlendAttachmentState m_colorBlendAttachment;
-	VkPipelineMultisampleStateCreateInfo m_multisampling;
-	VkPipelineLayout m_pipelineLayout;
-    VkPipelineDepthStencilStateCreateInfo m_depthStencil;
-    VkPipelineTessellationStateCreateInfo m_tessellationState;
-
-    VkPipeline BuildPipeline(VkDevice p_device, VkRenderPass p_pass);
-};
-
-struct UploadContext {
-    VkFence m_uploadFence;
-	VkCommandPool m_commandPool;
-	VkCommandBuffer m_commandBuffer;
-};
 
 class VulkanEngine {
 public:
@@ -192,6 +85,8 @@ private:
     VkDescriptorSetLayout m_objectSetLayout;
     VkDescriptorSetLayout m_heightmapSetLayout;
 
+    VkSampler m_singleTextureSampler, m_heightmapSampler;
+
     // --- SCENE STUFF ---
     std::unordered_map<std::string, Texture> m_loadedTextures;
     std::unordered_map<std::string, Material> m_materials;
@@ -203,7 +98,7 @@ private:
     int m_heightmapWidth, m_heightmapHeight, m_heightmapChannels;
     unsigned char* m_heightmapData;
     Mesh m_cpuTerrainMesh;
-    Mesh m_debugCpuTerrainMesh;
+    // Mesh m_debugCpuTerrainMesh;
 
     Mesh m_terrainMesh;
     Material m_terrainMaterial;
@@ -215,6 +110,7 @@ private:
     UploadContext m_uploadContext;
 
     GPUSceneData m_sceneParameters;
+    float m_terrainParametersChangeTimer{0.0f};
     AllocatedBuffer m_sceneParameterBuffer;
 private:
     bool* m_showDemoWindow;
@@ -229,7 +125,7 @@ public:
     void Cleanup();
 
 
-    AllocatedBuffer CreateBuffer(size_t p_allocSize, VkBufferUsageFlags p_usage, VmaMemoryUsage p_memoryUsage);
+    AllocatedBuffer CreateBuffer(size_t p_allocSize, VkBufferUsageFlags p_usage, VmaMemoryUsage p_memoryUsage) const;
     void ImmediateSubmit(std::function<void(VkCommandBuffer p_cmd)>&& function);
 
     void OnKeyPressed(int p_key, int p_scancode, int p_action, int p_mods);
@@ -241,12 +137,7 @@ private:
     Material* GetMaterial(const std::string &p_name);
     Material* CreateMaterial(VkPipeline p_pipeline, VkPipelineLayout p_layout, const std::string &p_name);
 
-    void LoadImages();
-    void LoadMeshes();
-    void UploadMesh(Mesh& p_mesh);
-
-    void InitScene();
-    void ComputeCPUTerrainMesh();
+    void UpdateTexture(VkSampler &p_sampler, VkImageView &p_imageView, VkDescriptorSet &p_imageSet);
 
     void InitVulkan();
     void InitSwapchain();
@@ -256,7 +147,14 @@ private:
     void InitSyncStructures();
     void InitDescriptors();
     void InitPipelines();
+    void InitSampler();
     void InitIMGUI();
+
+    void LoadImages();
+    void LoadMeshes();
+    void UploadMesh(Mesh& p_mesh);
+    void ComputeCPUTerrainMesh();
+    void InitScene();
 
     void CleanupSwapchain();
     void RecreateSwapchain();
@@ -270,7 +168,7 @@ private:
     void DrawObjects(VkCommandBuffer p_cmd, RenderObject* p_first, uint32_t count);
     void DrawRenderObject(VkCommandBuffer p_cmd, RenderObject& p_object, Mesh* p_lastMesh, Material* p_lastMaterial, uint32_t p_index);
     void ProcessInputs(float p_deltaTime);
-    void RaycastOnTerrain(glm::vec3 p_direction, glm::vec3 p_origin);
+    RaycastResult RaycastOnTerrain(glm::vec3 p_direction, glm::vec3 p_origin);
 
     static void FramebufferSizeCallback(GLFWwindow* p_window, int p_width, int p_height);
 };

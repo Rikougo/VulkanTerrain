@@ -27,9 +27,7 @@ layout(std140,set = 1, binding = 0) readonly buffer ObjectBuffer{
 
 void main()
 {
-    // convert XYZ vertex to XYZW homogeneous coordinate
-    gl_Position = vec4(vPosition, 1.0f);
-    // pass texture coordinate though
+    gl_Position = vec4(vPosition, 1.0f); // homogeneous coordinate to tesselation
     fTexCoord = vTexCoord;
 }
 	

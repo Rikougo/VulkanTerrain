@@ -11,21 +11,29 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
 
-bool VulkanUtil::LoadImageFromFile(VulkanEngine &p_engine, std::filesystem::path p_path, AllocatedImage &p_outImage) {
+bool VulkanUtil::LoadImageFromFile(VulkanEngine &p_engine, std::filesystem::path p_path, AllocatedImage &p_outImage, VkFormat p_imageFormat) {
     int l_texWidth, l_texHeight, l_texChannels;
 
-	stbi_uc* l_pixels = stbi_load(p_path.string().c_str(), &l_texWidth, &l_texHeight, &l_texChannels, STBI_rgb_alpha);
+	unsigned char* l_pixels = stbi_load(p_path.string().c_str(), &l_texWidth, &l_texHeight, &l_texChannels, STBI_rgb_alpha);
 
 	if (!l_pixels) {
 		std::cout << "Failed to load texture file " << p_path << std::endl;
 		return false;
 	}
 
-    void* l_pxlPtr = l_pixels;
-	VkDeviceSize l_imageSize = l_texWidth * l_texHeight * 4;
+    bool l_result = VulkanUtil::LoadImageFromData(p_engine, l_pixels, l_texWidth, l_texHeight, p_outImage, p_imageFormat);
+
+    stbi_image_free(l_pixels);
+
+    return l_result;
+}
+
+bool VulkanUtil::LoadImageFromData(VulkanEngine &p_engine, unsigned char* p_imageData, int p_texWidth, int p_texHeight, AllocatedImage &p_outImage, VkFormat p_imageFormat) {
+    void* l_pxlPtr = p_imageData;
+	VkDeviceSize l_imageSize = p_texWidth * p_texHeight * 4;
 
 	//the format R8G8B8A8 matches exactly with the pixels loaded from stb_image lib
-	VkFormat l_imageFormat = VK_FORMAT_R8G8B8A8_SRGB;
+	VkFormat l_imageFormat = p_imageFormat;
 
 	//allocate temporary buffer for holding texture data to upload
 	AllocatedBuffer stagingBuffer = p_engine.CreateBuffer(l_imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_CPU_ONLY);
@@ -37,12 +45,10 @@ bool VulkanUtil::LoadImageFromFile(VulkanEngine &p_engine, std::filesystem::path
 	memcpy(data, l_pxlPtr, static_cast<size_t>(l_imageSize));
 
 	vmaUnmapMemory(p_engine.m_allocator, stagingBuffer.m_allocation);
-	//we no longer need the loaded data, so we can free the pixels as they are now in the staging buffer
-	stbi_image_free(l_pixels);
 
     VkExtent3D imageExtent;
-	imageExtent.width = static_cast<uint32_t>(l_texWidth);
-	imageExtent.height = static_cast<uint32_t>(l_texHeight);
+	imageExtent.width = static_cast<uint32_t>(p_texWidth);
+	imageExtent.height = static_cast<uint32_t>(p_texHeight);
 	imageExtent.depth = 1;
 
 	VkImageCreateInfo dimg_info = VulkanInit::ImageCreateInfo(l_imageFormat, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, imageExtent);
@@ -113,14 +119,11 @@ bool VulkanUtil::LoadImageFromFile(VulkanEngine &p_engine, std::filesystem::path
     });
 
 
-    p_engine.m_mainDeletionQueue.PushFunction([=]() {
-
+    /*p_engine.m_mainDeletionQueue.PushFunction([=]() {
 		vmaDestroyImage(p_engine.m_allocator, l_newImage.m_image, l_newImage.m_allocation);
-	});
+	});*/
 
 	vmaDestroyBuffer(p_engine.m_allocator, stagingBuffer.m_buffer, stagingBuffer.m_allocation);
-
-	std::cout << "Texture loaded successfully " << p_path << std::endl;
 
 	p_outImage = l_newImage;
 	return true;
